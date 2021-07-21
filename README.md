@@ -38,7 +38,7 @@ This is the result of packing 88 files!
 
 ## 📦 Packing
 
-1. To pack an addon, first (optionally) create a gluapack.json file in your addon's root, and [configure gluapack](#configuration) to your needs.
+1. To pack an addon, first (optionally) create a `gluapack.json` file in your addon's root, and [configure gluapack](#configuration) to your needs.
 
 2. Then, simply run the program with the path to your addon's root (the folder containing `lua/`):
 
