@@ -1,8 +1,18 @@
-mod gluapack;
+mod pack;
 mod config;
 
-use gluapack::Packer;
+use pack::Packer;
 use config::{Config, GlobPattern};
+
+fn canonicalize(path: &std::path::PathBuf) -> impl std::fmt::Display {
+	#[cfg(target_os = "windows")] {
+		let path = path.canonicalize().as_ref().unwrap_or_else(|_| &path).to_string_lossy().into_owned();
+		path.clone().strip_prefix(r#"\\?\"#).map(|str| str.to_owned()).unwrap_or(path)
+	}
+
+	#[cfg(not(target_os = "windows"))]
+	path.canonicalize().as_ref().unwrap_or_else(|_| &path).display()
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum PackingError {
@@ -15,21 +25,6 @@ pub enum PackingError {
 	#[error("Realm conflict! This file is included in multiple realms: {0}\nPlease tinker your config and resolve the realm conflicts.")]
 	RealmConflict(String),
 }
-impl From<std::io::Error> for PackingError {
-	fn from(error: std::io::Error) -> Self {
-		PackingError::IoError(error)
-	}
-}
-impl From<glob::GlobError> for PackingError {
-	fn from(error: glob::GlobError) -> Self {
-		PackingError::IoError(error.into_error())
-	}
-}
-impl From<serde_json::Error> for PackingError {
-	fn from(error: serde_json::Error) -> Self {
-		PackingError::ConfigError(error)
-	}
-}
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
@@ -37,30 +32,17 @@ async fn main() {
 
 	let mut args = std::env::args().skip(1);
 
-	let (lua_dir, dir) = match args.next() {
-		Some(dir) => {
-			let path = PathBuf::from(dir);
-
-			#[cfg(target_os = "windows")]
-			println!("Addon Path: {}", {
-				let path = path.canonicalize().as_ref().unwrap_or_else(|_| &path).to_string_lossy().into_owned();
-				path.clone().strip_prefix(r#"\\?\"#).map(|str| str.to_owned()).unwrap_or(path)
-			});
-
-			#[cfg(not(target_os = "windows"))]
-			println!("Addon Path: {}", path.canonicalize().as_ref().unwrap_or_else(|_| &path).display());
-
-			(path.join("lua"), path)
-		},
+	let dir = match args.next() {
+		Some(dir) => PathBuf::from(dir),
 		None => {
 			eprintln!("Please provide a path to the directory of the addon you want to pack (first argument)");
-			std::process::exit(1);
+			return;
 		}
 	};
 
 	if !dir.is_dir() {
 		eprintln!("No directory was found at this path, or lua/ wasn't found in this addon!");
-		std::process::exit(1);
+		return;
 	}
 
 	let mut conf = {
@@ -70,7 +52,7 @@ async fn main() {
 				Ok(conf) => conf,
 				Err(error) => {
 					eprintln!("{}", error);
-					std::process::exit(1);
+					return;
 				}
 			}
 		} else {
@@ -79,25 +61,44 @@ async fn main() {
 		}
 	};
 
-	let out_dir = if let Some(ref out) = conf.out {
-		let out = PathBuf::from(out);
-		if out.is_absolute() {
-			out
-		} else {
-			dir.parent().unwrap_or_else(|| dir.as_path()).join(out)
-		}
-	} else {
-		dir.parent().unwrap_or_else(|| dir.as_path()).join(format!("{}-gluapack", dir.file_name().unwrap().to_string_lossy()))
-	};
+	conf.dump_json();
 
-	if out_dir.is_dir() {
-		tokio::fs::remove_dir_all(&out_dir).await.expect("Failed to delete existing output directory");
-	} else {
-		if out_dir.is_file() {
+	println!("Addon Path: {}", canonicalize(&dir));
+
+	let out_dir = if true {
+		let out_dir = match conf.out {
+			Some(ref out) => {
+				let out = PathBuf::from(out);
+				if out.is_absolute() {
+					if out == dir {
+						eprintln!("ERROR: Output directory cannot be the same as the addon directory!");
+						return;
+					}
+					out
+				} else {
+					dir.parent().unwrap_or_else(|| dir.as_path()).join(out)
+				}
+			},
+			None => dir.parent().unwrap_or_else(|| dir.as_path()).join(&format!("{}-gluapack", dir.file_name().unwrap().to_string_lossy()))
+		};
+
+		if out_dir.is_dir() {
+			tokio::fs::remove_dir_all(&out_dir).await.expect("Failed to delete existing output directory");
+		} else if out_dir.is_file() {
 			tokio::fs::remove_file(&out_dir).await.expect("Failed to delete existing output directory");
 		}
-		tokio::fs::create_dir_all(&out_dir).await.expect("Failed to create output directory");
-	}
+
+		let result = tokio::fs::create_dir_all(&out_dir).await;
+
+		println!("Output Path: {}", canonicalize(&out_dir));
+
+		result.expect("Failed to create output directory");
+
+		Some(out_dir)
+	} else {
+		println!("Output Path: In-place");
+		None
+	};
 
 	if conf.entry_cl.is_empty() && conf.entry_sh.is_empty() && conf.entry_sv.is_empty() {
 		println!("WARNING: You have not specified any entry file patterns in your config. gluapack will do nothing after unpacking your addon.");
@@ -113,7 +114,7 @@ async fn main() {
 	conf.exclude.push(GlobPattern::new("gluapack/*/*"));
 	conf.exclude.push(GlobPattern::new("autorun/*_gluapack_*.lua"));
 
-	let result = Packer::pack(conf, lua_dir).await;
+	let result = Packer::pack(conf, dir, out_dir).await;
 
 	println!();
 	match result {
@@ -123,6 +124,6 @@ async fn main() {
 			println!("Successfully packed {} file(s) -> {} files ({}{:.2}%)", unpacked_files, packed_files, sign, pct_change.abs());
 			println!("Took {:?}", elapsed);
 		},
-		Err(error) => eprintln!("Packing error: {}", error)
+		Err(error) => eprintln!("ERROR: {}", error)
 	}
 }

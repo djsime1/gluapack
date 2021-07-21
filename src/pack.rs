@@ -57,12 +57,14 @@ impl Eq for LuaFile {}
 
 pub struct Packer {
 	dir: PathBuf,
+	out_dir: PathBuf,
 	config: Config,
 	unique_id: Option<String>
 }
 impl Packer {
-	pub async fn pack(config: Config, dir: PathBuf) -> Result<(usize, usize, Duration), PackingError> {
+	pub async fn pack(config: Config, dir: PathBuf, out_dir: Option<PathBuf>) -> Result<(usize, usize, Duration), PackingError> {
 		let mut packer = Packer {
+			out_dir: out_dir.clone().unwrap_or_else(|| dir.clone()),
 			dir,
 			config,
 			unique_id: None
@@ -70,7 +72,71 @@ impl Packer {
 
 		let started = std::time::Instant::now();
 
+		let in_place = if let Some(out_dir) = out_dir {
+			println!("Copying addon to output directory...");
+
+			tokio::fs::remove_dir_all(&out_dir).await?;
+			tokio::fs::create_dir_all(&out_dir).await?;
+
+			let mut visited_symlinks = HashSet::new();
+			fn copy_addon(visited_symlinks: &mut HashSet<PathBuf>, from: PathBuf, to: PathBuf) -> Result<(), std::io::Error> {
+				#[cfg(target_os = "windows")]
+				const FILE_ATTRIBUTE_HIDDEN: u32 = 0x02;
+
+				for dir_entry in from.read_dir()? {
+					let dir_entry = dir_entry?;
+
+					let entry;
+					if dir_entry.file_type()?.is_symlink() {
+						let path = dir_entry.path();
+						if visited_symlinks.insert(path.clone()) {
+							entry = path.read_link()?;
+						} else {
+							continue;
+						}
+					} else {
+						entry = dir_entry.path();
+					}
+
+					let file_name = entry.file_name().as_ref().unwrap().to_string_lossy();
+
+					if file_name.starts_with(".") || file_name == "gluapack.json" {
+						// Skip hidden files/dirs and gluapack.json
+						continue;
+					}
+
+					#[cfg(target_os = "windows")]
+					if std::os::windows::fs::MetadataExt::file_attributes(&entry.metadata()?) & FILE_ATTRIBUTE_HIDDEN != 0 {
+						// Skip hidden files (Windows)
+						continue;
+					}
+
+					let file_name = file_name.into_owned();
+
+					if entry.is_dir() {
+						let dir = to.join(&file_name);
+						std::fs::create_dir_all(&dir)?;
+						copy_addon(visited_symlinks, entry, dir)?;
+					} else if entry.is_file() {
+						std::fs::copy(entry, to.join(&file_name))?;
+					}
+				}
+				Ok(())
+			}
+			copy_addon(&mut visited_symlinks, packer.dir.clone(), out_dir.clone())?;
+
+			false
+		} else {
+			println!("Deleting old gluapack files...");
+			packer.delete_old_gluapack_files().await?;
+
+			true
+		};
+
 		println!("Collecting Lua files...");
+
+		packer.out_dir.push("lua");
+		packer.dir.push("lua");
 
 		let ((sv, sv_entry_files), (cl, cl_entry_files), (sh, sh_entry_files)) = tokio::try_join!(
 			packer.collect_lua_files(&packer.config.include_sv, &packer.config.exclude, &packer.config.entry_sv),
@@ -92,13 +158,11 @@ impl Packer {
 
 		println!("Packing...");
 
-		let (sv, cl, sh) = tokio::try_join!(
+		let ((sv_paths, sv), (cl_paths, cl), (sh_paths, sh)) = tokio::try_join!(
 			tokio::task::spawn_blocking(move || Packer::pack_lua_files(sv, false)),
 			tokio::task::spawn_blocking(move || Packer::pack_lua_files(cl, true)),
 			tokio::task::spawn_blocking(move || Packer::pack_lua_files(sh, true))
 		).expect("Failed to join threads");
-
-		packer.delete_old_gluapack_files().await?;
 
 		packer.unique_id = Some(packer.config.unique_id.as_ref().map(|x| x.to_owned()).unwrap_or_else(|| {
 			const HASH_SUBHEX_LENGTH: usize = 16;
@@ -111,11 +175,11 @@ impl Packer {
 			format!("{:x}", sha256.finalize())[0..HASH_SUBHEX_LENGTH].to_string()
 		}));
 
-		tokio::fs::create_dir_all(packer.dir.join(&format!("gluapack/{}", packer.unique_id()))).await.expect("Failed to create gluapack directory");
+		tokio::fs::create_dir_all(packer.out_dir.join(&format!("gluapack/{}", packer.unique_id()))).await.expect("Failed to create gluapack directory");
 
 		if !sv.is_empty() {
 			println!("Writing packed serverside files...");
-			tokio::fs::write(packer.dir.join(&format!("gluapack/{}/gluapack.sv.lua", packer.unique_id())), sv).await?;
+			tokio::fs::write(packer.out_dir.join(&format!("gluapack/{}/gluapack.sv.lua", packer.unique_id())), sv).await?;
 		}
 
 		let total_packed_files = if !cl.is_empty() || !sh.is_empty() {
@@ -139,12 +203,43 @@ impl Packer {
 		println!("Injecting loader...");
 		packer.write_loader(sv_entry_files, cl_entry_files, sh_entry_files).await?;
 
+		if !in_place {
+			println!("Deleting unpacked files...");
+			packer.delete_unpacked(sv_paths, cl_paths, sh_paths).await?;
+		}
+
 		Ok((total_unpacked_files, total_packed_files + 3, started.elapsed()))
 	}
 
 	fn unique_id(&self) -> &String {
 		debug_assert!(self.unique_id.is_some());
 		self.unique_id.as_ref().unwrap()
+	}
+
+	async fn delete_old_gluapack_files(&self) -> Result<(), PackingError> {
+		let gluapack_dir = glob(&self.out_dir.join("gluapack/*").to_string_lossy()).unwrap()
+			.filter(|result| match result {
+				Ok(path) => path.is_dir(),
+				Err(_) => true
+			})
+			.take(1)
+			.next();
+
+		let gluapack_loader = glob(&self.out_dir.join("autorun/*_gluapack_*.lua").to_string_lossy())
+			.unwrap()
+			.take(1)
+			.next();
+
+		if gluapack_dir.is_some() || gluapack_loader.is_some() {
+			println!("Deleting old gluapack files...");
+			if let Some(gluapack_loader) = gluapack_loader {
+				tokio::fs::remove_file(gluapack_loader?).await?;
+			}
+			if let Some(gluapack_dir) = gluapack_dir {
+				tokio::fs::remove_dir_all(gluapack_dir?).await?;
+			}
+		}
+		Ok(())
 	}
 
 	async fn collect_lua_files(&self, patterns: &[GlobPattern], excludes: &[GlobPattern], entries: &[GlobPattern]) -> Result<(HashSet<LuaFile>, Vec<String>), PackingError> {
@@ -224,37 +319,13 @@ impl Packer {
 		Ok((lua_files, entry_files))
 	}
 
-	async fn delete_old_gluapack_files(&self) -> Result<(), PackingError> {
-		let gluapack_dir = glob(&self.dir.join("gluapack/*").to_string_lossy()).unwrap()
-			.filter(|result| match result {
-				Ok(path) => path.is_dir(),
-				Err(_) => true
-			})
-			.take(1)
-			.next();
+	fn pack_lua_files(lua_files: HashSet<LuaFile>, is_sent_to_client: bool) -> (Vec<String>, Vec<u8>) {
+		use std::io::Write;
 
-		let gluapack_loader = glob(&self.dir.join("autorun/*_gluapack_*.lua").to_string_lossy())
-			.unwrap()
-			.take(1)
-			.next();
-
-		if gluapack_dir.is_some() || gluapack_loader.is_some() {
-			println!("Deleting old gluapack files...");
-			if let Some(gluapack_loader) = gluapack_loader {
-				tokio::fs::remove_file(gluapack_loader?).await?;
-			}
-			if let Some(gluapack_dir) = gluapack_dir {
-				tokio::fs::remove_dir_all(gluapack_dir?).await?;
-			}
-		}
-		Ok(())
-	}
-
-	fn pack_lua_files(lua_files: HashSet<LuaFile>, is_sent_to_client: bool) -> Vec<u8> {
 		const MEM_PREALLOCATE_MAX: usize = 1024 * 1024 * 1024;
 		const TERMINATOR_HACK: u8 = '|' as u8;
 
-		use std::io::Write;
+		let mut file_list = Vec::with_capacity(lua_files.len());
 
 		let mut superchunk: Vec<u8> = Vec::with_capacity((lua_files.len() * MAX_LUA_SIZE).min(MEM_PREALLOCATE_MAX));
 		for mut lua_file in lua_files.into_iter() {
@@ -279,15 +350,17 @@ impl Packer {
 			}
 
 			superchunk.write_all(&mut lua_file.contents).expect("Failed to write Lua file into superchunk");
+
+			file_list.push(lua_file.path);
 		}
 
-		superchunk
+		(file_list, superchunk)
 	}
 
 	async fn write_packed_chunks(&self, bytes: Vec<u8>, chunk_name: &'static str) -> Result<(Vec<[u8; 20]>, usize), PackingError> {
 		use tokio::io::AsyncWriteExt;
 
-		let gluapack_dir = self.dir.join(format!("gluapack/{}", self.unique_id()));
+		let gluapack_dir = self.out_dir.join(format!("gluapack/{}", self.unique_id()));
 
 		let is_sent_to_client = matches!(chunk_name, "sh" | "cl");
 		if is_sent_to_client {
@@ -379,7 +452,7 @@ impl Packer {
 		}
 
 		cache_manifest.push('}');
-		tokio::fs::write(self.dir.join(format!("gluapack/{}/manifest.lua", self.unique_id())), cache_manifest).await?;
+		tokio::fs::write(self.out_dir.join(format!("gluapack/{}/manifest.lua", self.unique_id())), cache_manifest).await?;
 
 		Ok(())
 	}
@@ -416,9 +489,54 @@ impl Packer {
 			.replacen("{ENTRY_FILES_CL}", &cl_entry_files, 1)
 			.replacen("{ENTRY_FILES_SH}", &sh_entry_files, 1);
 
-		tokio::fs::create_dir_all(self.dir.join("autorun")).await?;
-		tokio::fs::write(self.dir.join(format!("autorun/{}_gluapack_{}.lua", self.unique_id(), env!("CARGO_PKG_VERSION"))), loader).await?;
+		tokio::fs::create_dir_all(self.out_dir.join("autorun")).await?;
+		tokio::fs::write(self.out_dir.join(format!("autorun/{}_gluapack_{}.lua", self.unique_id(), env!("CARGO_PKG_VERSION"))), loader).await?;
 
 		Ok(())
+	}
+
+	async fn delete_unpacked(&self, sv_paths: Vec<String>, cl_paths: Vec<String>, sh_paths: Vec<String>) -> Result<(), PackingError> {
+		let mut check_empty = Vec::new();
+
+		future::try_join_all(
+			sv_paths.into_iter().chain(cl_paths.into_iter()).chain(sh_paths.into_iter()).map(|path| {
+				let path = self.out_dir.join(path);
+				for ancestor in path.ancestors().skip(1) {
+					if ancestor == self.out_dir {
+						break;
+					} else {
+						let ancestor = ancestor.to_path_buf();
+						if let Err(pos) = check_empty.binary_search_by(|probe: &PathBuf| probe.cmp(&ancestor).reverse()) {
+							check_empty.insert(pos, ancestor);
+						}
+					}
+				}
+				tokio::fs::remove_file(path)
+			})
+		).await?;
+
+		tokio::task::spawn_blocking(move || {
+			for dir in check_empty {
+				std::fs::remove_dir(dir).ok();
+			}
+		}).await.expect("Failed to join thread");
+
+		Ok(())
+	}
+}
+
+impl From<std::io::Error> for PackingError {
+	fn from(error: std::io::Error) -> Self {
+		PackingError::IoError(error)
+	}
+}
+impl From<glob::GlobError> for PackingError {
+	fn from(error: glob::GlobError) -> Self {
+		PackingError::IoError(error.into_error())
+	}
+}
+impl From<serde_json::Error> for PackingError {
+	fn from(error: serde_json::Error) -> Self {
+		PackingError::ConfigError(error)
 	}
 }
