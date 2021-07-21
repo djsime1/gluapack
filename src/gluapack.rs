@@ -416,6 +416,7 @@ impl Packer {
 			.replacen("{ENTRY_FILES_CL}", &cl_entry_files, 1)
 			.replacen("{ENTRY_FILES_SH}", &sh_entry_files, 1);
 
+		tokio::fs::create_dir_all(self.dir.join("autorun")).await?;
 		tokio::fs::write(self.dir.join(format!("autorun/{}_gluapack_{}.lua", self.unique_id(), env!("CARGO_PKG_VERSION"))), loader).await?;
 
 		Ok(())
