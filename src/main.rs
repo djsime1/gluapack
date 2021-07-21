@@ -1,12 +1,8 @@
-use std::path::PathBuf;
-#[cfg(test)]
-mod tests;
-
 mod gluapack;
 mod config;
-use gluapack::*;
 
-use crate::config::{Config, GlobPattern};
+use gluapack::Packer;
+use config::{Config, GlobPattern};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PackingError {
@@ -41,8 +37,17 @@ async fn main() {
 
 	let dir = match args.next() {
 		Some(dir) => {
-			let mut path = PathBuf::from(dir);
-			println!("Addon Path: {}", path.display());
+			let mut path = std::path::PathBuf::from(dir);
+
+			#[cfg(target_os = "windows")]
+			println!("Addon Path: {}", {
+				let path = path.canonicalize().as_ref().unwrap_or_else(|_| &path).to_string_lossy().into_owned();
+				path.clone().strip_prefix(r#"\\?\"#).map(|str| str.to_owned()).unwrap_or(path)
+			});
+
+			#[cfg(not(target_os = "windows"))]
+			println!("Addon Path: {}", path.canonicalize().as_ref().unwrap_or_else(|_| &path).display());
+
 			path.push("lua");
 			path
 		},
@@ -87,15 +92,16 @@ async fn main() {
 	conf.exclude.push(GlobPattern::new("gluapack/*/*"));
 	conf.exclude.push(GlobPattern::new("autorun/*_gluapack_*.lua"));
 
-	let result = gluapack(conf, dir).await;
+	let result = Packer::pack(conf, dir).await;
 
 	println!();
 	match result {
-		Ok((unpacked_files, packed_files)) => {
+		Ok((unpacked_files, packed_files, elapsed)) => {
 			let pct_change = (((unpacked_files as f64) - (packed_files as f64)) / (unpacked_files as f64)) * 100.;
 			let sign = if pct_change == 0. { "" } else if pct_change > 0. { "-" } else { "+" };
-			println!("Successfully packed {} file(s) -> {} files ({}{:.2}%)", unpacked_files, packed_files, sign, pct_change.abs())
+			println!("Successfully packed {} file(s) -> {} files ({}{:.2}%)", unpacked_files, packed_files, sign, pct_change.abs());
+			println!("Took {:?}", elapsed);
 		},
-		Err(error) => eprintln!("Packing error: {:#?}", error)
+		Err(error) => eprintln!("Packing error: {}", error)
 	}
 }
