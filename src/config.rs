@@ -124,9 +124,11 @@ pub struct Config {
 impl Config {
 	pub fn read<P: AsRef<Path>>(path: P) -> Result<Config, PackingError> {
 		let mut f = File::open(path)?;
-		let x = serde_json::from_reader(&mut f)?;
-		println!("{}", serde_json::to_string_pretty(&x).unwrap());
-		Ok(x)
+		Ok(serde_json::from_reader(&mut f)?)
+	}
+
+	pub fn dump_json(&self) {
+		println!("{}", serde_json::to_string_pretty(&self).unwrap());
 	}
 }
 impl_default! {
