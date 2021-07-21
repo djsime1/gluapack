@@ -36,11 +36,11 @@ This is the result of packing 88 files!
 
 # Usage
 
+## 👨‍💻 CLI
+
 The program has a simple CLI interface which you can view the help of with:
 
 #### Unix
-
-## 👨‍💻 CLI
 
 ```bash
 ./gluapack --help
