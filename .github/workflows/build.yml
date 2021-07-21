@@ -1,0 +1,60 @@
+name: build
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build_linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Add targets
+      run: rustup target add x86_64-unknown-linux-gnu && rustup target add i686-unknown-linux-gnu
+    - name: Build 64-bit
+      run: cargo build --verbose --target x86_64-unknown-linux-gnu --release
+    - name: Build 32-bit
+      run: cargo build --verbose --target i686-unknown-linux-gnu --release
+    - name: Strip 64-bit debug info
+      run: strip target/x86_64-unknown-linux-gnu/release/gluapack
+    - name: Strip 32-bit debug info
+      run: strip target/i686-unknown-linux-gnu/release/gluapack
+    - name: Rename 64-bit binary
+      run: mv target/x86_64-unknown-linux-gnu/release/gluapack target/x86_64-unknown-linux-gnu/release/gluapack_linux64
+    - name: Rename 32-bit binary
+      run: mv target/i686-unknown-linux-gnu/release/gluapack target/i686-unknown-linux-gnu/release/gluapack_linux32
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          target/i686-unknown-linux-gnu/release/gluapack_linux32
+          target/x86_64-unknown-linux-gnu/release/gluapack_linux64
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build_windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v2
+    - name: Add targets
+      run: rustup target add x86_64-pc-windows-msvc && rustup target add i686-pc-windows-msvc
+    - name: Build 64-bit
+      run: cargo build --verbose --target x86_64-pc-windows-msvc --release
+    - name: Build 32-bit
+      run: cargo build --verbose --target i686-pc-windows-msvc --release
+    - name: Rename 64-bit binary
+      run: ren target/x86_64-pc-windows-msvc/release/gluapack.exe gluapack_win64.exe
+    - name: Rename 32-bit binary
+      run: ren target/i686-pc-windows-msvc/release/gluapack.exe gluapack_win32.exe
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          target/i686-pc-windows-msvc/release/gluapack_win32.exe
+          target/x86_64-pc-windows-msvc/release/gluapack_win64.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
