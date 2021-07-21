@@ -98,6 +98,13 @@ async fn collect_lua_files<P: AsRef<Path>>(dir: P, patterns: &[GlobPattern], exc
 		for entry in entries {
 			if entry.matches(&path) {
 				entry_files.push(path.to_owned());
+		{
+			println!("Checking realms...");
+			let mut all_lua_files = HashSet::new();
+			for lua_file in sv.iter().chain(sh.iter()).chain(cl.iter()) {
+				if !all_lua_files.insert(lua_file.path.clone()) {
+					return Err(PackingError::RealmConflict(lua_file.path.clone()));
+				}
 			}
 		}
 

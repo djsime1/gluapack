@@ -16,8 +16,8 @@ pub enum PackingError {
 	#[error("gluapack.json error: {0}")]
 	ConfigError(serde_json::Error),
 
-	#[error("Realm conflict! This file is included in multiple realms: {0}")]
-	RealmConflict(PathBuf), // TODO
+	#[error("Realm conflict! This file is included in multiple realms: {0}\nPlease tinker your config and resolve the realm conflicts.")]
+	RealmConflict(String),
 }
 impl From<std::io::Error> for PackingError {
 	fn from(error: std::io::Error) -> Self {
