@@ -232,8 +232,6 @@ impl Unpacker {
 				std::fs::create_dir_all(parent)?;
 			}
 
-			println!("{}", path.display());
-
 			let mut out = File::create(path)?;
 			std::io::copy(&mut f.by_ref().take(len as u64), &mut out)?;
 
