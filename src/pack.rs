@@ -1,26 +1,12 @@
 // The order of operations should be: sv cl sh
 
-use crate::{PackingError, config::{Config, GlobPattern}};
+use crate::{MAX_LUA_SIZE, MEM_PREALLOCATE_MAX, TERMINATOR_HACK, util, config::{Config, GlobPattern}};
 use std::{collections::HashSet, convert::TryInto, path::PathBuf, time::Duration};
 use futures_util::{FutureExt, future};
-
-use fsize::fsize;
 use sha2::Digest;
 
 /// Lua comment
 const COMMENT_START: &'static [u8; 2] = b"--";
-
-/// The maximum size of a chunk.
-///
-/// This should be 64 KiB as Garry's Mod will not network a Lua file larger than this.
-const MAX_LUA_SIZE: usize = 65535;
-
-/// Returns an iterator that will find all matches of the given glob pattern.
-fn glob<S: AsRef<str>>(pattern: S) -> Result<glob::Paths, glob::PatternError> {
-	let mut opt = glob::MatchOptions::new();
-	opt.require_literal_separator = true;
-	glob::glob_with(pattern.as_ref(), opt)
-}
 
 /// Prepends `--` to every line in the byte vector.
 fn commentify(bytes: Vec<u8>) -> Vec<u8> {
@@ -56,27 +42,95 @@ impl PartialEq for LuaFile {
 impl Eq for LuaFile {}
 
 pub struct Packer {
-	dir: PathBuf,
-	out_dir: PathBuf,
-	config: Config,
-	unique_id: Option<String>
+	pub dir: PathBuf,
+	pub out_dir: PathBuf,
+	pub config: Config,
+	pub unique_id: Option<String>,
+	pub quiet: bool
 }
 impl Packer {
-	pub async fn pack(config: Config, dir: PathBuf, out_dir: Option<PathBuf>) -> Result<(usize, usize, Duration), PackingError> {
+	pub async fn pack(dir: PathBuf, out_dir: Option<PathBuf>, quiet: bool) -> Result<(usize, usize, Duration), PackingError> {
+		let mut config = {
+			let config_path = dir.join("gluapack.json");
+			if config_path.is_file() {
+				match Config::read(config_path) {
+					Ok(config) => config,
+					Err(error) => {
+						eprintln!("ERROR: {}", error);
+						abort!();
+					}
+				}
+			} else {
+				quietln!(quiet, "WARNING: Couldn't find gluapack.json in your addon. Using the default config.");
+				Config::default()
+			}
+		};
+
+		if !quiet {
+			config.dump_json();
+			println!("Addon Path: {}", util::canonicalize(&dir));
+		}
+
+		let (in_place, out_dir) = util::prepare_output_dir(quiet, &dir, out_dir).await;
+
+		if config.entry_cl.is_empty() && config.entry_sh.is_empty() && config.entry_sv.is_empty() {
+			quietln!(quiet, "WARNING: You have not specified any entry file patterns in your config. gluapack will do nothing after unpacking your addon.");
+		}
+
+		config.include_sh.extend_from_slice(&config.entry_sh);
+		config.include_sv.extend_from_slice(&config.entry_sv);
+		config.include_cl.extend_from_slice(&config.entry_cl);
+
+		quietln!(quiet);
+
+		// Make sure we exclude any previous gluapack files
+		config.exclude.push(GlobPattern::new("gluapack/*/*"));
+		config.exclude.push(GlobPattern::new("autorun/*_gluapack_*.lua"));
+
+		// Start packing
 		let mut packer = Packer {
-			out_dir: out_dir.clone().unwrap_or_else(|| dir.clone()),
+			out_dir,
 			dir,
 			config,
-			unique_id: None
+			unique_id: None,
+			quiet
 		};
 
 		let started = std::time::Instant::now();
 
-		let in_place = if let Some(out_dir) = out_dir {
-			println!("Copying addon to output directory...");
+		quietln!(quiet, "Collecting Lua files...");
 
-			tokio::fs::remove_dir_all(&out_dir).await?;
-			tokio::fs::create_dir_all(&out_dir).await?;
+		packer.out_dir.push("lua");
+		packer.dir.push("lua");
+
+		let ((sv, sv_entry_files), (cl, cl_entry_files), (sh, sh_entry_files)) = tokio::try_join!(
+			packer.collect_lua_files(&packer.config.include_sv, &packer.config.exclude, &packer.config.entry_sv),
+			packer.collect_lua_files(&packer.config.include_cl, &packer.config.exclude, &packer.config.entry_cl),
+			packer.collect_lua_files(&packer.config.include_sh, &packer.config.exclude, &packer.config.entry_sh),
+		)?;
+
+		{
+			quietln!(quiet, "Checking realms...");
+			let mut all_lua_files = HashSet::new();
+			for lua_file in sv.iter().chain(sh.iter()).chain(cl.iter()) {
+				if !all_lua_files.insert(lua_file.path.clone()) {
+					return Err(PackingError::RealmConflict(lua_file.path.clone()));
+				}
+			}
+		}
+
+		let total_unpacked_files = sv.len() + cl.len() + sh.len();
+		if total_unpacked_files == 0 {
+			return Err(PackingError::NoLuaFiles);
+		}
+
+		if !in_place {
+			quietln!(quiet, "Copying addon to output directory...");
+
+			let out_dir = packer.out_dir.parent().unwrap(); // pop lua/
+
+			tokio::fs::remove_dir_all(out_dir).await?;
+			tokio::fs::create_dir_all(out_dir).await?;
 
 			let mut visited_symlinks = HashSet::new();
 			fn copy_addon(visited_symlinks: &mut HashSet<PathBuf>, from: PathBuf, to: PathBuf) -> Result<(), std::io::Error> {
@@ -123,40 +177,13 @@ impl Packer {
 				}
 				Ok(())
 			}
-			copy_addon(&mut visited_symlinks, packer.dir.clone(), out_dir.clone())?;
-
-			false
+			copy_addon(&mut visited_symlinks, packer.dir.parent().unwrap().to_path_buf(), out_dir.to_path_buf())?;
 		} else {
-			println!("Deleting old gluapack files...");
+			quietln!(quiet, "Deleting old gluapack files...");
 			packer.delete_old_gluapack_files().await?;
-
-			true
-		};
-
-		println!("Collecting Lua files...");
-
-		packer.out_dir.push("lua");
-		packer.dir.push("lua");
-
-		let ((sv, sv_entry_files), (cl, cl_entry_files), (sh, sh_entry_files)) = tokio::try_join!(
-			packer.collect_lua_files(&packer.config.include_sv, &packer.config.exclude, &packer.config.entry_sv),
-			packer.collect_lua_files(&packer.config.include_cl, &packer.config.exclude, &packer.config.entry_cl),
-			packer.collect_lua_files(&packer.config.include_sh, &packer.config.exclude, &packer.config.entry_sh),
-		)?;
-
-		{
-			println!("Checking realms...");
-			let mut all_lua_files = HashSet::new();
-			for lua_file in sv.iter().chain(sh.iter()).chain(cl.iter()) {
-				if !all_lua_files.insert(lua_file.path.clone()) {
-					return Err(PackingError::RealmConflict(lua_file.path.clone()));
-				}
-			}
 		}
 
-		let total_unpacked_files = sv.len() + cl.len() + sh.len();
-
-		println!("Packing...");
+		quietln!(quiet, "Packing...");
 
 		let ((sv_paths, sv), (cl_paths, cl), (sh_paths, sh)) = tokio::try_join!(
 			tokio::task::spawn_blocking(move || Packer::pack_lua_files(sv, false)),
@@ -167,7 +194,7 @@ impl Packer {
 		packer.unique_id = Some(packer.config.unique_id.as_ref().map(|x| x.to_owned()).unwrap_or_else(|| {
 			const HASH_SUBHEX_LENGTH: usize = 16;
 
-			println!("Calculating hash...");
+			quietln!(quiet, "Calculating hash...");
 
 			let mut sha256 = sha2::Sha256::new();
 			sha256.update(&sv);
@@ -178,12 +205,12 @@ impl Packer {
 		tokio::fs::create_dir_all(packer.out_dir.join(&format!("gluapack/{}", packer.unique_id()))).await.expect("Failed to create gluapack directory");
 
 		if !sv.is_empty() {
-			println!("Writing packed serverside files...");
+			quietln!(quiet, "Writing packed serverside files...");
 			tokio::fs::write(packer.out_dir.join(&format!("gluapack/{}/gluapack.sv.lua", packer.unique_id())), sv).await?;
 		}
 
 		let total_packed_files = if !cl.is_empty() || !sh.is_empty() {
-			println!("Chunking...");
+			quietln!(quiet, "Chunking...");
 
 			let ((hashes_cl, chunk_n_cl), (hashes_sh, chunk_n_sh)) = tokio::try_join!(
 				packer.write_packed_chunks(cl, "cl"),
@@ -191,7 +218,7 @@ impl Packer {
 			)?;
 
 			if !hashes_cl.is_empty() || !hashes_sh.is_empty() {
-				println!("Generating clientside Lua cache manifest...");
+				quietln!(quiet, "Generating clientside Lua cache manifest...");
 				packer.generate_cache_manifest(hashes_cl, hashes_sh).await?;
 			}
 
@@ -200,11 +227,11 @@ impl Packer {
 			0
 		};
 
-		println!("Injecting loader...");
+		quietln!(quiet, "Injecting loader...");
 		packer.write_loader(sv_entry_files, cl_entry_files, sh_entry_files).await?;
 
 		if !in_place {
-			println!("Deleting unpacked files...");
+			quietln!(quiet, "Deleting unpacked files...");
 			packer.delete_unpacked(sv_paths, cl_paths, sh_paths).await?;
 		}
 
@@ -216,32 +243,6 @@ impl Packer {
 		self.unique_id.as_ref().unwrap()
 	}
 
-	async fn delete_old_gluapack_files(&self) -> Result<(), PackingError> {
-		let gluapack_dir = glob(&self.out_dir.join("gluapack/*").to_string_lossy()).unwrap()
-			.filter(|result| match result {
-				Ok(path) => path.is_dir(),
-				Err(_) => true
-			})
-			.take(1)
-			.next();
-
-		let gluapack_loader = glob(&self.out_dir.join("autorun/*_gluapack_*.lua").to_string_lossy())
-			.unwrap()
-			.take(1)
-			.next();
-
-		if gluapack_dir.is_some() || gluapack_loader.is_some() {
-			println!("Deleting old gluapack files...");
-			if let Some(gluapack_loader) = gluapack_loader {
-				tokio::fs::remove_file(gluapack_loader?).await?;
-			}
-			if let Some(gluapack_dir) = gluapack_dir {
-				tokio::fs::remove_dir_all(gluapack_dir?).await?;
-			}
-		}
-		Ok(())
-	}
-
 	async fn collect_lua_files(&self, patterns: &[GlobPattern], excludes: &[GlobPattern], entries: &[GlobPattern]) -> Result<(HashSet<LuaFile>, Vec<String>), PackingError> {
 		let mut lua_files = HashSet::new();
 		let mut entry_files = vec![];
@@ -251,7 +252,7 @@ impl Packer {
 
 		for pattern in patterns {
 			for path in {
-				glob(&self.dir.join(pattern.as_str()).to_string_lossy())
+				util::glob(&self.dir.join(pattern.as_str()).to_string_lossy())
 					.expect("Failed to construct glob when joining addon directory")
 					.filter(|result| {
 						match result {
@@ -319,11 +320,54 @@ impl Packer {
 		Ok((lua_files, entry_files))
 	}
 
+	async fn delete_old_gluapack_files(&self) -> Result<(), PackingError> {
+		async fn delete<I, V>(gluapack_dir: I, gluapack_loader: V) -> Result<(), PackingError>
+		where
+			I: Iterator<Item = Result<PathBuf, glob::GlobError>>,
+			V: Iterator<Item = Result<PathBuf, glob::GlobError>>
+		{
+			for gluapack_loader in gluapack_loader {
+				tokio::fs::remove_file(gluapack_loader?).await?;
+			}
+			for gluapack_dir in gluapack_dir {
+				tokio::fs::remove_dir_all(gluapack_dir?).await?;
+			}
+			Ok(())
+		}
+
+		if !self.quiet {
+			let mut gluapack_dir = util::glob(&self.out_dir.join("gluapack/*").to_string_lossy()).unwrap()
+				.filter(|result| match result {
+					Ok(path) => path.is_dir(),
+					Err(_) => true
+				})
+				.peekable();
+
+			let mut gluapack_loader = util::glob(&self.out_dir.join("autorun/*_gluapack_*.lua").to_string_lossy()).unwrap().peekable();
+
+			if gluapack_dir.peek().is_some() || gluapack_loader.peek().is_some() {
+				println!("Deleting old gluapack files...");
+				delete(gluapack_dir, gluapack_loader).await?;
+			} else {
+				return Ok(());
+			}
+		} else {
+			let gluapack_dir = util::glob(&self.out_dir.join("gluapack/*").to_string_lossy()).unwrap()
+				.filter(|result| match result {
+					Ok(path) => path.is_dir(),
+					Err(_) => true
+				});
+
+			let gluapack_loader = util::glob(&self.out_dir.join("autorun/*_gluapack_*.lua").to_string_lossy()).unwrap();
+
+			delete(gluapack_dir, gluapack_loader).await?;
+		};
+
+		Ok(())
+	}
+
 	fn pack_lua_files(lua_files: HashSet<LuaFile>, is_sent_to_client: bool) -> (Vec<String>, Vec<u8>) {
 		use std::io::Write;
-
-		const MEM_PREALLOCATE_MAX: usize = 1024 * 1024 * 1024;
-		const TERMINATOR_HACK: u8 = '|' as u8;
 
 		let mut file_list = Vec::with_capacity(lua_files.len());
 
@@ -334,7 +378,7 @@ impl Packer {
 			superchunk.write_all(&mut lua_file.path.as_bytes()).expect("Failed to write script path into superchunk");
 			if is_sent_to_client {
 				// We can't use NUL to terminate because clientside Lua files will only send up to the NUL byte (fucking C strings)
-				// We can just use a newline instead
+				// We can just use a | instead
 				superchunk.push(TERMINATOR_HACK);
 
 				// Write the length of the file as a hex string since we can't use NUL to terminate
@@ -365,53 +409,56 @@ impl Packer {
 		let is_sent_to_client = matches!(chunk_name, "sh" | "cl");
 		if is_sent_to_client {
 			let mut chunk_n = 0;
-			let bytes = commentify(bytes);
-			let mut writers = Vec::with_capacity((bytes.len() as fsize / MAX_LUA_SIZE as fsize).ceil() as usize);
-			for (i, chunk) in bytes.chunks(MAX_LUA_SIZE).enumerate() {
-				chunk_n += 1;
-				let file_name = format!("gluapack.{}.{}.lua", i + 1, chunk_name);
-				let path = gluapack_dir.join(&file_name);
-				writers.push(async move {
-					if !chunk.starts_with(COMMENT_START) {
-						let mut f = tokio::fs::File::create(&path).await?;
-						f.write_all(COMMENT_START).await?;
-						f.write_all(&chunk).await?;
 
-						Result::<[u8; 20], std::io::Error>::Ok({
-							let mut sha256 = sha2::Sha256::new();
-							sha256.update(COMMENT_START);
-							sha256.update(chunk);
-							sha256.update(&[0u8]);
+			let hashes = future::try_join_all(
+				commentify(bytes).chunks(MAX_LUA_SIZE).enumerate().map(|(i, chunk)| {
+					chunk_n += 1;
+					let file_name = format!("gluapack.{}.{}.lua", i + 1, chunk_name);
+					let path = gluapack_dir.join(&file_name);
+					async move {
+						if !chunk.starts_with(COMMENT_START) {
+							let mut f = tokio::fs::File::create(&path).await?;
+							f.write_all(COMMENT_START).await?;
+							f.write_all(&chunk).await?;
 
-							let sha256 = sha256.finalize();
-							sha256[0..20].try_into().unwrap()
-						})
-					} else {
-						tokio::fs::write(&path, &chunk).await?;
+							Result::<[u8; 20], std::io::Error>::Ok({
+								let mut sha256 = sha2::Sha256::new();
+								sha256.update(COMMENT_START);
+								sha256.update(chunk);
+								sha256.update(&[0u8]);
 
-						Result::<[u8; 20], std::io::Error>::Ok({
-							let mut sha256 = sha2::Sha256::new();
-							sha256.update(chunk);
-							sha256.update(&[0u8]);
+								let sha256 = sha256.finalize();
+								sha256[0..20].try_into().unwrap()
+							})
+						} else {
+							tokio::fs::write(&path, &chunk).await?;
 
-							let sha256 = sha256.finalize();
-							sha256[0..20].try_into().unwrap()
-						})
+							Result::<[u8; 20], std::io::Error>::Ok({
+								let mut sha256 = sha2::Sha256::new();
+								sha256.update(chunk);
+								sha256.update(&[0u8]);
+
+								let sha256 = sha256.finalize();
+								sha256[0..20].try_into().unwrap()
+							})
+						}
 					}
-				});
-			}
-			Ok((future::try_join_all(writers).await?, chunk_n))
+				})
+			).await?;
+
+			Ok((hashes, chunk_n))
 		} else {
 			let mut chunk_n = 0;
-			let mut writers = Vec::with_capacity((bytes.len() as fsize / MAX_LUA_SIZE as fsize).ceil() as usize);
-			for (i, chunk) in bytes.chunks(MAX_LUA_SIZE - if is_sent_to_client { 2 } else { 0 }).enumerate() {
-				chunk_n += 1;
-				let file_name = format!("gluapack.{}.{}.lua", i + 1, chunk_name);
-				let path = gluapack_dir.join(&file_name);
-				writers.push(tokio::fs::write(path, chunk));
-			}
 
-			future::try_join_all(writers).await?;
+			future::try_join_all(
+				bytes.chunks(MAX_LUA_SIZE).enumerate().map(|(i, chunk)| {
+					chunk_n += 1;
+					let file_name = format!("gluapack.{}.{}.lua", i + 1, chunk_name);
+					let path = gluapack_dir.join(&file_name);
+					tokio::fs::write(path, chunk)
+				})
+			).await?;
+
 			Ok((vec![], chunk_n))
 		}
 	}
@@ -525,18 +572,32 @@ impl Packer {
 	}
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum PackingError {
+	#[error("IO error: {0}")]
+	IoError(std::io::Error),
+
+	#[error("gluapack.json error: {0}")]
+	ConfigError(serde_json::Error),
+
+	#[error("Realm conflict! This file is included in multiple realms: {0}\nPlease tinker your config and resolve the realm conflicts.")]
+	RealmConflict(String),
+
+	#[error("No Lua files were found in your addon using this inclusion configuration")]
+	NoLuaFiles,
+}
 impl From<std::io::Error> for PackingError {
 	fn from(error: std::io::Error) -> Self {
-		PackingError::IoError(error)
+		Self::IoError(error)
 	}
 }
 impl From<glob::GlobError> for PackingError {
 	fn from(error: glob::GlobError) -> Self {
-		PackingError::IoError(error.into_error())
+		Self::IoError(error.into_error())
 	}
 }
 impl From<serde_json::Error> for PackingError {
 	fn from(error: serde_json::Error) -> Self {
-		PackingError::ConfigError(error)
+		Self::ConfigError(error)
 	}
 }
