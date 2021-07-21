@@ -117,6 +117,9 @@ pub struct Config {
 
 	#[serde(default)]
 	pub unique_id: Option<String>,
+
+	#[serde(default)]
+	pub out: Option<String>,
 }
 impl Config {
 	pub fn read<P: AsRef<Path>>(path: P) -> Result<Config, PackingError> {
@@ -137,6 +140,7 @@ impl_default! {
 		entry_sh: Vec<GlobPattern> = vec![GlobPattern::new("autorun/*.lua")],
 		entry_sv: Vec<GlobPattern> = vec![GlobPattern::new("autorun/server/*.lua")],
 
-		unique_id: Option<String> = None
+		unique_id: Option<String> = None,
+		out: Option<String> = None
 	}
 }
