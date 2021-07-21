@@ -83,7 +83,16 @@ impl<'de> serde::Deserialize<'de> for GlobPattern {
 	}
 }
 
-#[derive(serde::Deserialize, Debug)]
+impl serde::Serialize for GlobPattern {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer
+	{
+		serializer.serialize_str(self.0.as_str())
+    }
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug)]
 pub struct Config {
 	#[serde(default = "include_sh")]
 	pub include_sh: Vec<GlobPattern>,
@@ -116,7 +125,7 @@ impl Config {
 	pub fn read<P: AsRef<Path>>(path: P) -> Result<Config, PackingError> {
 		let mut f = File::open(path)?;
 		let x = serde_json::from_reader(&mut f)?;
-		println!("{:#?}", x);
+		println!("{}", serde_json::to_string_pretty(&x).unwrap());
 		Ok(x)
 	}
 }
