@@ -28,6 +28,7 @@ gluapack_gmod_file_Exists = gluapack_gmod_file_Exists or file.Exists
 gluapack_gmod_file_Read = gluapack_gmod_file_Read or file.Read
 gluapack_gmod_file_AsyncRead = gluapack_gmod_file_AsyncRead or file.AsyncRead
 gluapack_gmod_file_Open = gluapack_gmod_file_Open or file.Open
+gluapack_gmod_file_IsDir = SERVER and gluapack_gmod_file_IsDir or file.IsDir or nil
 gluapack_gmod_include = gluapack_gmod_include or include
 gluapack_gmod_AddCSLuaFile = gluapack_gmod_AddCSLuaFile or AddCSLuaFile
 gluapack_gmod_CompileFile = gluapack_gmod_CompileFile or CompileFile
@@ -207,7 +208,7 @@ else
 			-- Write to our temp file "buffer"
 			file.Write("gluapack-temp.dat", chunk)
 			chunk = nil
-			
+
 			GLUAPACK_CURRENT_CHUNK = file_Open("gluapack-temp.dat", "rb", "DATA")
 
 			-- Continue as normal
@@ -337,6 +338,16 @@ else
 			end
 		end
 		return file_AsyncRead(path, gamePath, callback, sync)
+	end
+
+	function file.IsDir(path, gamePath)
+		if gamePath:lower() == "lua" then
+			local vfsPath = ("gluapack/vfs/%s"):format(path)
+			if gluapack_gmod_file_IsDir(vfsPath, "DATA") then
+				return true
+			end
+		end
+		return gluapack_gmod_file_IsDir(vfsPath, gamePath)
 	end
 end
 
