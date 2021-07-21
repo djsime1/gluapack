@@ -44,23 +44,23 @@ impl GlobPattern {
 	}
 }
 impl From<glob::Pattern> for GlobPattern {
-    fn from(pattern: glob::Pattern) -> Self {
-        GlobPattern(pattern)
-    }
+	fn from(pattern: glob::Pattern) -> Self {
+		GlobPattern(pattern)
+	}
 }
 impl std::fmt::Debug for GlobPattern {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{}", self.0)
+	}
 }
 
 struct GlobPatternVisitor;
 impl<'de> Visitor<'de> for GlobPatternVisitor {
-    type Value = GlobPattern;
+	type Value = GlobPattern;
 
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("invalid glob pattern")
-    }
+	fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+		formatter.write_str("invalid glob pattern")
+	}
 
 	fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
 	where
@@ -75,12 +75,12 @@ impl<'de> Visitor<'de> for GlobPatternVisitor {
 }
 
 impl<'de> serde::Deserialize<'de> for GlobPattern {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>
+	fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+	where
+		D: serde::Deserializer<'de>
 	{
-        deserializer.deserialize_str(GlobPatternVisitor)
-    }
+		deserializer.deserialize_str(GlobPatternVisitor)
+	}
 }
 
 #[derive(serde::Deserialize, Debug)]
