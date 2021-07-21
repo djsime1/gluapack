@@ -131,11 +131,11 @@ impl Config {
 impl_default! {
 	Config {
 		include_sh: Vec<GlobPattern> = vec![GlobPattern::new("**/sh_*.lua"), GlobPattern::new("**/*.sh.lua")],
-		include_cl: Vec<GlobPattern> = vec![GlobPattern::new("**/cl_*.lua"), GlobPattern::new("**/*.cl.lua"), GlobPattern::new("vgui/*.lua")],
+		include_cl: Vec<GlobPattern> = vec![GlobPattern::new("**/cl_*.lua"), GlobPattern::new("**/*.cl.lua"), GlobPattern::new("vgui/*.lua"), GlobPattern::new("skins/*.lua"), GlobPattern::new("postprocess/*.lua")],
 		include_sv: Vec<GlobPattern> = vec![GlobPattern::new("**/sv_*.lua"), GlobPattern::new("**/*.sv.lua")],
 		exclude: Vec<GlobPattern> = vec![],
 
-		entry_cl: Vec<GlobPattern> = vec![GlobPattern::new("autorun/client/*.lua"), GlobPattern::new("vgui/*.lua")], // TODO add more to this - i think there's more "autorun" stuff (postprocess/?)
+		entry_cl: Vec<GlobPattern> = vec![GlobPattern::new("autorun/client/*.lua"), GlobPattern::new("vgui/*.lua"), GlobPattern::new("skins/*.lua"), GlobPattern::new("postprocess/*.lua")],
 		entry_sh: Vec<GlobPattern> = vec![GlobPattern::new("autorun/*.lua")],
 		entry_sv: Vec<GlobPattern> = vec![GlobPattern::new("autorun/server/*.lua")],
 

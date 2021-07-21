@@ -107,8 +107,7 @@ gluapack.exe unpack "path/to/packed-addon"
     ],
     "include_cl": [
         "**/cl_*.lua",
-        "**/*.cl.lua",
-        "vgui/**/*.lua"
+        "**/*.cl.lua"
     ],
     "include_sv": [
         "**/sv_*.lua",
@@ -118,7 +117,9 @@ gluapack.exe unpack "path/to/packed-addon"
     // Entry files - these files will be executed immediately after being unpacked.
     "entry_cl": [
         "autorun/client/*.lua",
-        "vgui/*.lua"
+        "vgui/*.lua",
+        "skins/*.lua",
+        "postprocess/*.lua"
     ],
     "entry_sh": [
         "autorun/*.lua"
@@ -133,10 +134,10 @@ gluapack.exe unpack "path/to/packed-addon"
 
 * gluapack requires you to tell it what files should be sent to the client. It performs no analysis on your code to find `AddCSLuaFile` calls.
 
-	* gluapack by default will include common file patterns (such as `lua/**/sh_*.lua`) for networked chunks. See [Configuration](#Configuration) for more information.
+    * gluapack by default will include common file patterns (such as `lua/**/sh_*.lua`) for networked chunks. See [Configuration](#Configuration) for more information.
 
 * gluapack will cause the client to briefly freeze while spawning into the server to unpack files and build the virtual file system
 
 * gluapack requires you to specify entry file(s) (files that will be executed when the addon is unpacked).
 
-	* gluapack by default will include common file patterns (such as `lua/autorun/**.lua`) as entry files. See [Configuration](#Configuration) for more information.
+    * gluapack by default will include common file patterns (such as `lua/autorun/**.lua`) as entry files. See [Configuration](#Configuration) for more information.
