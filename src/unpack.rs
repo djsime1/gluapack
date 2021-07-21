@@ -17,7 +17,7 @@ pub struct Unpacker {
 }
 impl Unpacker {
 	pub async fn unpack(dir: PathBuf, out_dir: Option<PathBuf>, quiet: bool) -> Result<(usize, usize, Duration), UnpackingError> {
-		quietln!(quiet, "Addon Path: {}", util::canonicalize(&dir));
+		quietln!(quiet, "Addon Path: {}", util::canonicalize(&dir).display());
 
 		let (in_place, out_dir) = util::prepare_output_dir(quiet, &dir, out_dir).await;
 

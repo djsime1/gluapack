@@ -36,29 +36,57 @@ This is the result of packing 88 files!
 
 # Usage
 
-## 📦 Packing
+The program has a simple CLI interface which you can view the help of with:
 
-1. To pack an addon, first (optionally) create a `gluapack.json` file in your addon's root, and [configure gluapack](#configuration) to your needs.
+#### Unix
 
-2. Then, simply run the program with the path to your addon's root (the folder containing `lua/`):
-
-#### Linux
+## 👨‍💻 CLI
 
 ```bash
-./gluapack "path/to/addon"
+./gluapack --help
 ```
 
 #### Windows
 
 ```batch
-gluapack.exe "path/to/addon"
+gluapack.exe --help
+```
+
+## 📦 Packing
+
+1. To pack an addon, first (optionally) create a `gluapack.json` file in your addon's root, and [configure gluapack](#configuration) to your needs.
+
+2. Then, simply run the program with the `pack` command and the path to your addon's root (the folder containing `lua/`):
+
+#### Unix
+
+```bash
+./gluapack pack "path/to/addon"
+```
+
+#### Windows
+
+```batch
+gluapack.exe pack "path/to/addon"
 ```
 
 3. Move `lua/gluapack` (the packed files) and `lua/autorun/*_gluapack_*.lua` (the loader file) into your "production"/packed addon. Make sure to delete any files you have packed from your addons, including entry files. They are no longer needed!
 
 ## 📤 Unpacking
 
-TODO (for now, you can access unpacked files in `garrysmod/data/gluapack/vfs/`)
+To unpack a packed addon, run the program with the `unpack` command and the path to the packed addon:
+
+#### Unix
+
+```bash
+./gluapack unpack "path/to/packed-addon"
+```
+
+#### Windows
+
+```batch
+gluapack.exe unpack "path/to/packed-addon"
+```
 
 # Configuration
 

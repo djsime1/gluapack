@@ -33,14 +33,8 @@ pub fn glob<S: AsRef<str>>(pattern: S) -> Result<glob::Paths, glob::PatternError
 }
 
 #[inline(always)]
-pub fn canonicalize(path: &PathBuf) -> impl std::fmt::Display {
-	#[cfg(target_os = "windows")] {
-		let path = path.canonicalize().as_ref().unwrap_or_else(|_| &path).to_string_lossy().into_owned();
-		path.clone().strip_prefix(r#"\\?\"#).map(|str| str.to_owned()).unwrap_or(path)
-	}
-
-	#[cfg(not(target_os = "windows"))]
-	path.canonicalize().as_ref().unwrap_or_else(|_| &path).display()
+pub fn canonicalize(path: &PathBuf) -> PathBuf {
+	dunce::canonicalize(path).as_ref().unwrap_or(path).to_owned()
 }
 
 #[inline(always)]
@@ -54,7 +48,7 @@ pub async fn prepare_output_dir(quiet: bool, dir: &PathBuf, out_dir: Option<Path
 
 		let result = tokio::fs::create_dir_all(&out_dir).await;
 
-		quietln!(quiet, "Output Path: {}", canonicalize(&out_dir));
+		quietln!(quiet, "Output Path: {}", canonicalize(&out_dir).display());
 
 		result.expect("Failed to create output directory");
 

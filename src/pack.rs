@@ -68,7 +68,7 @@ impl Packer {
 
 		if !quiet {
 			config.dump_json();
-			println!("Addon Path: {}", util::canonicalize(&dir));
+			println!("Addon Path: {}", util::canonicalize(&dir).display());
 		}
 
 		let (in_place, out_dir) = util::prepare_output_dir(quiet, &dir, out_dir).await;
