@@ -1,0 +1,16 @@
+[package]
+name = "gluapack"
+version = "0.1.0"
+authors = ["William Venner <william@venner.io>"]
+edition = "2018"
+
+[dependencies]
+glob = "0.3.0"
+tokio = { version = "1.8.1", features = ["fs", "process", "rt", "rt-multi-thread", "macros", "sync", "io-util"] }
+futures-util = "0.3.15"
+serde = { version = "1.0.126", features = ["derive"] }
+serde_json = "1.0.64"
+derive_more = "0.99.16"
+thiserror = "1.0.26"
+fsize = "0.1.0"
+sha2 = "0.9.5"
