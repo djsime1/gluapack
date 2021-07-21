@@ -33,11 +33,13 @@ impl From<serde_json::Error> for PackingError {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
+	use std::path::PathBuf;
+
 	let mut args = std::env::args().skip(1);
 
-	let dir = match args.next() {
+	let (lua_dir, dir) = match args.next() {
 		Some(dir) => {
-			let mut path = std::path::PathBuf::from(dir);
+			let path = PathBuf::from(dir);
 
 			#[cfg(target_os = "windows")]
 			println!("Addon Path: {}", {
@@ -48,8 +50,7 @@ async fn main() {
 			#[cfg(not(target_os = "windows"))]
 			println!("Addon Path: {}", path.canonicalize().as_ref().unwrap_or_else(|_| &path).display());
 
-			path.push("lua");
-			path
+			(path.join("lua"), path)
 		},
 		None => {
 			eprintln!("Please provide a path to the directory of the addon you want to pack (first argument)");
@@ -63,7 +64,7 @@ async fn main() {
 	}
 
 	let mut conf = {
-		let conf_path = dir.parent().unwrap().join("gluapack.json");
+		let conf_path = dir.join("gluapack.json");
 		if conf_path.is_file() {
 			match Config::read(conf_path) {
 				Ok(conf) => conf,
@@ -77,6 +78,26 @@ async fn main() {
 			Config::default()
 		}
 	};
+
+	let out_dir = if let Some(ref out) = conf.out {
+		let out = PathBuf::from(out);
+		if out.is_absolute() {
+			out
+		} else {
+			dir.parent().unwrap_or_else(|| dir.as_path()).join(out)
+		}
+	} else {
+		dir.parent().unwrap_or_else(|| dir.as_path()).join(format!("{}-gluapack", dir.file_name().unwrap().to_string_lossy()))
+	};
+
+	if out_dir.is_dir() {
+		tokio::fs::remove_dir_all(&out_dir).await.expect("Failed to delete existing output directory");
+	} else {
+		if out_dir.is_file() {
+			tokio::fs::remove_file(&out_dir).await.expect("Failed to delete existing output directory");
+		}
+		tokio::fs::create_dir_all(&out_dir).await.expect("Failed to create output directory");
+	}
 
 	if conf.entry_cl.is_empty() && conf.entry_sh.is_empty() && conf.entry_sv.is_empty() {
 		println!("WARNING: You have not specified any entry file patterns in your config. gluapack will do nothing after unpacking your addon.");
@@ -92,7 +113,7 @@ async fn main() {
 	conf.exclude.push(GlobPattern::new("gluapack/*/*"));
 	conf.exclude.push(GlobPattern::new("autorun/*_gluapack_*.lua"));
 
-	let result = Packer::pack(conf, dir).await;
+	let result = Packer::pack(conf, lua_dir).await;
 
 	println!();
 	match result {
