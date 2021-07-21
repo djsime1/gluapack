@@ -1,7 +1,7 @@
 // The order of operations should be: sv cl sh
 
 use crate::{PackingError, config::{Config, GlobPattern}};
-use std::{collections::HashSet, convert::TryInto, path::PathBuf, sync::Arc, time::{Duration, Instant}};
+use std::{collections::HashSet, convert::TryInto, path::PathBuf, time::Duration};
 use futures_util::{FutureExt, future};
 
 use fsize::fsize;
