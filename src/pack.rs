@@ -77,10 +77,6 @@ impl Packer {
 			quietln!(quiet, "WARNING: You have not specified any entry file patterns in your config. gluapack will do nothing after unpacking your addon.");
 		}
 
-		config.include_sh.extend_from_slice(&config.entry_sh);
-		config.include_sv.extend_from_slice(&config.entry_sv);
-		config.include_cl.extend_from_slice(&config.entry_cl);
-
 		quietln!(quiet);
 
 		// Make sure we exclude any previous gluapack files
@@ -250,7 +246,7 @@ impl Packer {
 
 		let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<(Vec<u8>, String), std::io::Error>>();
 
-		for pattern in patterns {
+		for pattern in patterns.iter().chain(entries.iter()) {
 			for path in {
 				util::glob(&self.dir.join(pattern.as_str()).to_string_lossy())
 					.expect("Failed to construct glob when joining addon directory")
