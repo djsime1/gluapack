@@ -93,6 +93,7 @@ async fn main() {
 				eprintln!("ERROR: Couldn't find an addon at this path containing a lua/ folder.");
 				abort!();
 			}
+			let path = dunce::canonicalize(&path).unwrap_or_else(|_| path);
 			path
 		}}
 	}
