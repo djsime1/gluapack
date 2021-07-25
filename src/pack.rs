@@ -73,8 +73,8 @@ impl Packer {
 			(true, dir.clone())
 		};
 
-		if config.entry_cl.is_empty() && config.entry_sh.is_empty() && config.entry_sv.is_empty() {
-			quietln!(quiet, "WARNING: You have not specified any entry file patterns in your config. gluapack will do nothing after unpacking your addon.");
+		if quiet && config.entry_cl.is_empty() && config.entry_sh.is_empty() && config.entry_sv.is_empty() {
+			println!("WARNING: You have not specified any entry file patterns in your config. gluapack will do nothing after unpacking your addon.");
 		}
 
 		quietln!(quiet);
