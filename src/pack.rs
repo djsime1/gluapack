@@ -49,7 +49,7 @@ pub struct Packer {
 	pub quiet: bool
 }
 impl Packer {
-	pub async fn pack(dir: PathBuf, out_dir: Option<PathBuf>, quiet: bool) -> Result<(usize, usize, Duration), PackingError> {
+	pub async fn pack(dir: PathBuf, out_dir: Option<PathBuf>, no_copy: bool, quiet: bool) -> Result<(usize, usize, Duration), PackingError> {
 		let mut config = {
 			let config_path = dir.join("gluapack.json");
 			if config_path.is_file() {
@@ -121,8 +121,10 @@ impl Packer {
 		}
 
 		if !in_place {
-			quietln!(quiet, "Copying addon to output directory...");
-			packer.copy_addon().await?;
+			if !no_copy {
+				quietln!(quiet, "Copying addon to output directory...");
+				packer.copy_addon().await?;
+			}
 		} else {
 			quietln!(quiet, "Deleting old gluapack files...");
 			packer.delete_old_gluapack_files().await?;
@@ -175,7 +177,7 @@ impl Packer {
 		quietln!(quiet, "Injecting loader...");
 		packer.write_loader(sv_entry_files, cl_entry_files, sh_entry_files).await?;
 
-		if !in_place {
+		if !in_place && !no_copy {
 			quietln!(quiet, "Deleting unpacked files...");
 			packer.delete_unpacked(sv_paths, cl_paths, sh_paths).await?;
 		}
