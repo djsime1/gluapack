@@ -252,14 +252,7 @@ impl Packer {
 					.expect("Failed to construct glob when joining addon directory")
 					.filter(|result| {
 						match result {
-							Ok(path) => 'filter: loop {
-								for exclude in excludes {
-									if exclude.matches_path(path.strip_prefix(&self.dir).unwrap()) {
-										break 'filter false;
-									}
-								}
-								break 'filter true;
-							},
+							Ok(path) => excludes.iter().find(|exclude| exclude.matches_path(path.strip_prefix(&self.dir).unwrap())).is_none(),
 							Err(_) => true,
 						}
 					})
