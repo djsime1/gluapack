@@ -71,7 +71,13 @@ impl Packer {
 			println!("Addon Path: {}", util::canonicalize(&dir).display());
 		}
 
-		let (in_place, out_dir) = util::prepare_output_dir(quiet, &dir, out_dir).await;
+		let (in_place, out_dir) = if let Some(out_dir) = out_dir {
+			util::prepare_output_dir(quiet, &out_dir).await;
+			(false, out_dir)
+		} else {
+			quietln!(quiet, "Output Path: In-place");
+			(true, dir.clone())
+		};
 
 		if config.entry_cl.is_empty() && config.entry_sh.is_empty() && config.entry_sv.is_empty() {
 			quietln!(quiet, "WARNING: You have not specified any entry file patterns in your config. gluapack will do nothing after unpacking your addon.");
@@ -122,58 +128,7 @@ impl Packer {
 
 		if !in_place {
 			quietln!(quiet, "Copying addon to output directory...");
-
-			let out_dir = packer.out_dir.parent().unwrap(); // pop lua/
-
-			tokio::fs::remove_dir_all(out_dir).await?;
-			tokio::fs::create_dir_all(out_dir).await?;
-
-			let mut visited_symlinks = HashSet::new();
-			fn copy_addon(visited_symlinks: &mut HashSet<PathBuf>, from: PathBuf, to: PathBuf) -> Result<(), std::io::Error> {
-				#[cfg(target_os = "windows")]
-				const FILE_ATTRIBUTE_HIDDEN: u32 = 0x02;
-
-				for dir_entry in from.read_dir()? {
-					let dir_entry = dir_entry?;
-
-					let entry;
-					if dir_entry.file_type()?.is_symlink() {
-						let path = dir_entry.path();
-						if visited_symlinks.insert(path.clone()) {
-							entry = path.read_link()?;
-						} else {
-							continue;
-						}
-					} else {
-						entry = dir_entry.path();
-					}
-
-					let file_name = entry.file_name().as_ref().unwrap().to_string_lossy();
-
-					if file_name.starts_with(".") || file_name == "gluapack.json" {
-						// Skip hidden files/dirs and gluapack.json
-						continue;
-					}
-
-					#[cfg(target_os = "windows")]
-					if std::os::windows::fs::MetadataExt::file_attributes(&entry.metadata()?) & FILE_ATTRIBUTE_HIDDEN != 0 {
-						// Skip hidden files (Windows)
-						continue;
-					}
-
-					let file_name = file_name.into_owned();
-
-					if entry.is_dir() {
-						let dir = to.join(&file_name);
-						std::fs::create_dir_all(&dir)?;
-						copy_addon(visited_symlinks, entry, dir)?;
-					} else if entry.is_file() {
-						std::fs::copy(entry, to.join(&file_name))?;
-					}
-				}
-				Ok(())
-			}
-			copy_addon(&mut visited_symlinks, packer.dir.parent().unwrap().to_path_buf(), out_dir.to_path_buf())?;
+			packer.copy_addon().await?;
 		} else {
 			quietln!(quiet, "Deleting old gluapack files...");
 			packer.delete_old_gluapack_files().await?;
@@ -307,6 +262,66 @@ impl Packer {
 		}
 
 		Ok((lua_files, entry_files))
+	}
+
+	async fn copy_addon(&self) -> Result<(), std::io::Error> {
+		let out_dir = self.out_dir.parent().unwrap(); // pop lua/
+
+		tokio::fs::remove_dir_all(out_dir).await?;
+		tokio::fs::create_dir_all(out_dir).await?;
+
+		fn copy_addon(visited_symlinks: &mut HashSet<PathBuf>, from: PathBuf, to: PathBuf) -> Result<(), std::io::Error> {
+			#[cfg(target_os = "windows")]
+			const FILE_ATTRIBUTE_HIDDEN: u32 = 0x02;
+
+			for dir_entry in from.read_dir()? {
+				let dir_entry = dir_entry?;
+
+				let entry;
+				if dir_entry.file_type()?.is_symlink() {
+					let path = dir_entry.path();
+					if visited_symlinks.insert(path.clone()) {
+						entry = path.read_link()?;
+					} else {
+						continue;
+					}
+				} else {
+					entry = dir_entry.path();
+				}
+
+				let file_name = entry.file_name().as_ref().unwrap().to_string_lossy();
+
+				if file_name.starts_with(".") || file_name == "gluapack.json" {
+					// Skip hidden files/dirs and gluapack.json
+					continue;
+				}
+
+				#[cfg(target_os = "windows")]
+				if std::os::windows::fs::MetadataExt::file_attributes(&entry.metadata()?) & FILE_ATTRIBUTE_HIDDEN != 0 {
+					// Skip hidden files (Windows)
+					continue;
+				}
+
+				let file_name = file_name.into_owned();
+
+				if entry.is_dir() {
+					let dir = to.join(&file_name);
+					std::fs::create_dir_all(&dir)?;
+					copy_addon(visited_symlinks, entry, dir)?;
+				} else if entry.is_file() {
+					std::fs::copy(entry, to.join(&file_name))?;
+				}
+			}
+			Ok(())
+		}
+
+		let from = self.dir.parent().unwrap().to_path_buf();
+		let to = out_dir.to_path_buf();
+
+		tokio::task::spawn_blocking(move || {
+			let mut visited_symlinks = HashSet::new();
+			copy_addon(&mut visited_symlinks, from, to)
+		}).await.expect("Failed to join thread")
 	}
 
 	async fn delete_old_gluapack_files(&self) -> Result<(), PackingError> {
