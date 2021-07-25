@@ -10,13 +10,12 @@ lazy_static! {
 	static ref GLUAPACK_DIR: PathBuf = PathBuf::from("gluapack");
 }
 
-pub struct Unpacker {
-	pub dir: PathBuf,
-	pub out_dir: PathBuf,
-	pub quiet: bool
+pub(crate) struct Unpacker {
+	pub(crate) dir: PathBuf,
+	pub(crate) out_dir: PathBuf
 }
 impl Unpacker {
-	pub async fn unpack(dir: PathBuf, out_dir: Option<PathBuf>, no_copy: bool, quiet: bool) -> Result<(usize, usize, Duration), UnpackingError> {
+	pub(crate) async fn unpack(dir: PathBuf, out_dir: Option<PathBuf>, no_copy: bool, quiet: bool) -> Result<(usize, usize, Duration), UnpackingError> {
 		quietln!(quiet, "Addon Path: {}", util::canonicalize(&dir).display());
 
 		let out_dir = if let Some(out_dir) = out_dir {
@@ -32,8 +31,7 @@ impl Unpacker {
 		// Start unpacking
 		let mut unpacker = Unpacker {
 			out_dir,
-			dir,
-			quiet
+			dir
 		};
 
 		let started = std::time::Instant::now();

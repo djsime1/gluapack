@@ -4,6 +4,14 @@ version = "0.3.0"
 authors = ["William Venner <william@venner.io>"]
 edition = "2018"
 
+[[bin]]
+name = "gluapack"
+path = "src/main.rs"
+
+[lib]
+name = "gluapack"
+path = "src/lib.rs"
+
 [profile.release]
 lto = 'thin'
 codegen-units = 1

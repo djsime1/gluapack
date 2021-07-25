@@ -6,19 +6,16 @@ extern crate lazy_static;
 #[macro_use]
 mod util;
 
+mod consts;
+pub(crate) use consts::*;
+
+mod config;
 mod pack;
 mod unpack;
-mod config;
+mod ship;
 
 use pack::Packer;
 use unpack::Unpacker;
-
-/// The maximum size of a chunk.
-///
-/// This should be 64 KiB as Garry's Mod will not network a Lua file larger than this.
-pub const MAX_LUA_SIZE: usize = 65535;
-pub const MEM_PREALLOCATE_MAX: usize = 1024 * 1024 * 1024;
-pub const TERMINATOR_HACK: u8 = '|' as u8;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
@@ -148,7 +145,7 @@ async fn main() {
 			let no_copy = args.is_present("no-copy");
 			let quiet = args.is_present("quiet");
 
-			match (quiet, Packer::pack(path, out_dir, no_copy, quiet).await) {
+			match (quiet, Packer::pack(path, out_dir, no_copy, quiet, None).await) {
 				(true, Ok(_)) => {},
 				(false, Ok((unpacked_files, packed_files, elapsed))) => {
 					println!();

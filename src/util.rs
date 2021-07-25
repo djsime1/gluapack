@@ -57,7 +57,7 @@ macro_rules! error {
 
 /// Returns an iterator that will find all matches of the given glob pattern.
 #[inline(always)]
-pub fn glob<S: AsRef<str>>(pattern: S) -> Result<glob::Paths, glob::PatternError> {
+pub(crate) fn glob<S: AsRef<str>>(pattern: S) -> Result<glob::Paths, glob::PatternError> {
 	glob::glob_with(pattern.as_ref(), {
 		let mut opt = glob::MatchOptions::new();
 		opt.require_literal_separator = true;
@@ -66,12 +66,12 @@ pub fn glob<S: AsRef<str>>(pattern: S) -> Result<glob::Paths, glob::PatternError
 }
 
 #[inline(always)]
-pub fn canonicalize(path: &PathBuf) -> PathBuf {
+pub(crate) fn canonicalize(path: &PathBuf) -> PathBuf {
 	dunce::canonicalize(path).as_ref().unwrap_or(path).to_owned()
 }
 
 #[inline(always)]
-pub async fn prepare_output_dir(quiet: bool, out_dir: &PathBuf) {
+pub(crate) async fn prepare_output_dir(quiet: bool, out_dir: &PathBuf) {
 	if out_dir.is_dir() {
 		quietln!(quiet, "Deleting old output directory...");
 		tokio::fs::remove_dir_all(&out_dir).await.expect("Failed to delete existing output directory");
