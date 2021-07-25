@@ -53,13 +53,7 @@ impl Packer {
 		let mut config = {
 			let config_path = dir.join("gluapack.json");
 			if config_path.is_file() {
-				match Config::read(config_path) {
-					Ok(config) => config,
-					Err(error) => {
-						eprintln!("ERROR: {}", error);
-						abort!();
-					}
-				}
+				Config::read(config_path)?
 			} else {
 				quietln!(quiet, "WARNING: Couldn't find gluapack.json in your addon. Using the default config.");
 				Config::default()
