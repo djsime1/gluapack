@@ -19,7 +19,13 @@ impl Unpacker {
 	pub async fn unpack(dir: PathBuf, out_dir: Option<PathBuf>, quiet: bool) -> Result<(usize, usize, Duration), UnpackingError> {
 		quietln!(quiet, "Addon Path: {}", util::canonicalize(&dir).display());
 
-		let (in_place, out_dir) = util::prepare_output_dir(quiet, &dir, out_dir).await;
+		let out_dir = if let Some(out_dir) = out_dir {
+			util::prepare_output_dir(quiet, &out_dir).await;
+			out_dir
+		} else {
+			quietln!(quiet, "Output Path: In-place");
+			dir.clone()
+		};
 
 		quietln!(quiet);
 
@@ -32,94 +38,11 @@ impl Unpacker {
 
 		let started = std::time::Instant::now();
 
-		if !in_place && unpacker.out_dir.exists() {
-			quietln!(quiet, "Deleting old output directory...");
-			tokio::fs::remove_dir_all(&unpacker.out_dir).await?;
-		}
-
 		let (sv_packed_file, cl_chunk_files, sh_chunk_files) = {
-			let (mut sv_packed_file, mut cl_chunk_files, mut sh_chunk_files) = (None, Vec::new(), Vec::new());
-
 			quietln!(quiet, "Copying addon to output directory...");
-			tokio::fs::create_dir_all(&unpacker.out_dir).await?;
-
-			let mut visited_symlinks = HashSet::new();
-			fn copy_addon(visited_symlinks: &mut HashSet<PathBuf>, from: PathBuf, to: PathBuf, sv_packed_file: &mut Option<PathBuf>, cl_chunk_files: &mut Vec<PathBuf>, sh_chunk_files: &mut Vec<PathBuf>, lua_folder: &Path) -> Result<(), std::io::Error> {
-				#[cfg(target_os = "windows")]
-				const FILE_ATTRIBUTE_HIDDEN: u32 = 0x02;
-
-				for dir_entry in from.read_dir()? {
-					let dir_entry = dir_entry?;
-
-					let entry;
-					if dir_entry.file_type()?.is_symlink() {
-						let path = dir_entry.path();
-						if visited_symlinks.insert(path.clone()) {
-							entry = path.read_link()?;
-						} else {
-							continue;
-						}
-					} else {
-						entry = dir_entry.path();
-					}
-
-					let file_name = entry.file_name().as_ref().unwrap().to_string_lossy();
-
-					// If we're in <dir>/lua
-					let skip_copy = if let Ok(lua_relative) = entry.strip_prefix(lua_folder) {
-						// Skip gluapack files
-						if entry.is_dir() {
-							lua_relative == &*GLUAPACK_DIR || CHUNK_DIR_GLOB.matches_path(lua_relative)
-						} else {
-							if LOADER_GLOB.matches_path(lua_relative) {
-								continue;
-							} else if CHUNK_FILE_GLOB.matches_path(lua_relative) {
-								// Remember chunk files for later
-								if &file_name == "gluapack.sv.lua" {
-									debug_assert!(sv_packed_file.is_none());
-									*sv_packed_file = Some(entry.clone());
-								} else if file_name.ends_with(".sh.lua") {
-									sh_chunk_files.push(entry.clone());
-								} else if file_name.ends_with(".cl.lua") {
-									cl_chunk_files.push(entry.clone());
-								}
-								continue;
-							} else {
-								false
-							}
-						}
-					} else {
-						false
-					};
-
-					if file_name.starts_with(".") || file_name == "gluapack.json" {
-						// Skip hidden files/dirs and gluapack.json
-						continue;
-					}
-
-					#[cfg(target_os = "windows")]
-					if std::os::windows::fs::MetadataExt::file_attributes(&entry.metadata()?) & FILE_ATTRIBUTE_HIDDEN != 0 {
-						// Skip hidden files (Windows)
-						continue;
-					}
-
-					let file_name = file_name.into_owned();
-
-					if entry.is_dir() {
-						let dir = to.join(&file_name);
-						if !skip_copy {
-							std::fs::create_dir_all(&dir)?;
-						}
-						copy_addon(visited_symlinks, entry, dir, sv_packed_file, cl_chunk_files, sh_chunk_files, lua_folder)?;
-					} else if entry.is_file() && !skip_copy {
-						std::fs::copy(entry, to.join(&file_name))?;
-					}
-				}
-				Ok(())
-			}
-			copy_addon(&mut visited_symlinks, unpacker.dir.clone(), unpacker.out_dir.clone(), &mut sv_packed_file, &mut cl_chunk_files, &mut sh_chunk_files, &unpacker.dir.join("lua"))?;
-
-			(sv_packed_file, cl_chunk_files, sh_chunk_files)
+			let dir = unpacker.dir.clone();
+			let out_dir = unpacker.out_dir.clone();
+			tokio::task::spawn_blocking(move || Unpacker::copy_addon(dir, out_dir)).await.expect("Failed to join thread")?
 		};
 
 		unpacker.out_dir.push("lua");
@@ -143,6 +66,93 @@ impl Unpacker {
 		total_unpacked_files += unpacker.parse_packed_files(sh_chunk_files).await?;
 
 		Ok((total_unpacked_files, total_packed_files + 2, started.elapsed()))
+	}
+
+	fn copy_addon(dir: PathBuf, out_dir: PathBuf) -> Result<(Option<PathBuf>, Vec<PathBuf>, Vec<PathBuf>), std::io::Error> {
+		std::fs::create_dir_all(&out_dir)?;
+
+		fn copy_addon(visited_symlinks: &mut HashSet<PathBuf>, lua_folder: &Path, from: PathBuf, to: PathBuf, sv_packed_file: &mut Option<PathBuf>, cl_chunk_files: &mut Vec<PathBuf>, sh_chunk_files: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
+			#[cfg(target_os = "windows")]
+			const FILE_ATTRIBUTE_HIDDEN: u32 = 0x02;
+
+			for dir_entry in from.read_dir()? {
+				let dir_entry = dir_entry?;
+
+				let entry;
+				if dir_entry.file_type()?.is_symlink() {
+					let path = dir_entry.path();
+					if visited_symlinks.insert(path.clone()) {
+						entry = path.read_link()?;
+					} else {
+						continue;
+					}
+				} else {
+					entry = dir_entry.path();
+				}
+
+				let file_name = entry.file_name().as_ref().unwrap().to_string_lossy();
+
+				// If we're in <dir>/lua
+				let skip_copy = if let Ok(lua_relative) = entry.strip_prefix(lua_folder) {
+					// Skip gluapack files
+					if entry.is_dir() {
+						lua_relative == &*GLUAPACK_DIR || CHUNK_DIR_GLOB.matches_path(lua_relative)
+					} else {
+						if LOADER_GLOB.matches_path(lua_relative) {
+							continue;
+						} else if CHUNK_FILE_GLOB.matches_path(lua_relative) {
+							// Remember chunk files for later
+							if &file_name == "gluapack.sv.lua" {
+								debug_assert!(sv_packed_file.is_none());
+								*sv_packed_file = Some(entry.clone());
+							} else if file_name.ends_with(".sh.lua") {
+								sh_chunk_files.push(entry.clone());
+							} else if file_name.ends_with(".cl.lua") {
+								cl_chunk_files.push(entry.clone());
+							}
+							continue;
+						} else {
+							false
+						}
+					}
+				} else {
+					false
+				};
+
+				if file_name.starts_with(".") || file_name == "gluapack.json" {
+					// Skip hidden files/dirs and gluapack.json
+					continue;
+				}
+
+				#[cfg(target_os = "windows")]
+				if std::os::windows::fs::MetadataExt::file_attributes(&entry.metadata()?) & FILE_ATTRIBUTE_HIDDEN != 0 {
+					// Skip hidden files (Windows)
+					continue;
+				}
+
+				let file_name = file_name.into_owned();
+
+				if entry.is_dir() {
+					let dir = to.join(&file_name);
+					if !skip_copy {
+						std::fs::create_dir_all(&dir)?;
+					}
+					copy_addon(visited_symlinks, lua_folder, entry, dir, sv_packed_file, cl_chunk_files, sh_chunk_files)?;
+				} else if entry.is_file() && !skip_copy {
+					std::fs::copy(entry, to.join(&file_name))?;
+				}
+			}
+			Ok(())
+		}
+
+		let mut sv_packed_file = None;
+		let mut cl_chunk_files = vec![];
+		let mut sh_chunk_files = vec![];
+
+		let mut visited_symlinks = HashSet::new();
+		copy_addon(&mut visited_symlinks, &dir.join("lua"), dir, out_dir, &mut sv_packed_file, &mut cl_chunk_files, &mut sh_chunk_files)?;
+
+		Ok((sv_packed_file, cl_chunk_files, sh_chunk_files))
 	}
 
 	async fn parse_sv_packed_file(&self, sv_packed_file: PathBuf) -> Result<usize, UnpackingError> {

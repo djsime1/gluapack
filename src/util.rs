@@ -38,23 +38,18 @@ pub fn canonicalize(path: &PathBuf) -> PathBuf {
 }
 
 #[inline(always)]
-pub async fn prepare_output_dir(quiet: bool, dir: &PathBuf, out_dir: Option<PathBuf>) -> (bool, PathBuf) {
-	if let Some(out_dir) = out_dir {
-		if out_dir.is_dir() {
-			tokio::fs::remove_dir_all(&out_dir).await.expect("Failed to delete existing output directory");
-		} else if out_dir.is_file() {
-			tokio::fs::remove_file(&out_dir).await.expect("Failed to delete existing output directory");
-		}
-
-		let result = tokio::fs::create_dir_all(&out_dir).await;
-
-		quietln!(quiet, "Output Path: {}", canonicalize(&out_dir).display());
-
-		result.expect("Failed to create output directory");
-
-		(false, out_dir)
-	} else {
-		quietln!(quiet, "Output Path: In-place");
-		(true, dir.clone())
+pub async fn prepare_output_dir(quiet: bool, out_dir: &PathBuf) {
+	if out_dir.is_dir() {
+		quietln!(quiet, "Deleting old output directory...");
+		tokio::fs::remove_dir_all(&out_dir).await.expect("Failed to delete existing output directory");
+	} else if out_dir.is_file() {
+		quietln!(quiet, "Deleting old output directory...");
+		tokio::fs::remove_file(&out_dir).await.expect("Failed to delete existing output directory");
 	}
+
+	let result = tokio::fs::create_dir_all(&out_dir).await;
+
+	quietln!(quiet, "Output Path: {}", canonicalize(&out_dir).display());
+
+	result.expect("Failed to create output directory");
 }
