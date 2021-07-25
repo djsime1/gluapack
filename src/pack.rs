@@ -110,14 +110,14 @@ impl Packer {
 			let mut all_lua_files = HashSet::new();
 			for lua_file in sv.iter().chain(sh.iter()).chain(cl.iter()) {
 				if !all_lua_files.insert(lua_file.path.clone()) {
-					return Err(PackingError::RealmConflict(lua_file.path.clone()));
+					return Err(error!(PackingError::RealmConflict(lua_file.path.clone())));
 				}
 			}
 		}
 
 		let total_unpacked_files = sv.len() + cl.len() + sh.len();
 		if total_unpacked_files == 0 {
-			return Err(PackingError::NoLuaFiles);
+			return Err(error!(PackingError::NoLuaFiles));
 		}
 
 		if !in_place {
@@ -239,7 +239,7 @@ impl Packer {
 				Ok(data) => data,
 				Err(error) => {
 					abort_handles.into_iter().for_each(|handle| handle.abort());
-					return Err(PackingError::IoError(error));
+					return Err(error!(PackingError::IoError(error)));
 				}
 			};
 
@@ -572,30 +572,41 @@ impl Packer {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PackingError {
-	#[error("IO error: {0}")]
-	IoError(std::io::Error),
+	#[error("IO error: {error}")]
+	IoError {
+		error: std::io::Error,
+		#[cfg(all(debug_assertions, feature = "nightly"))]
+		backtrace: std::backtrace::Backtrace
+	},
 
-	#[error("gluapack.json error: {0}")]
-	ConfigError(serde_json::Error),
+	#[error("gluapack.json error: {error}")]
+	ConfigError {
+		error: serde_json::Error,
+		#[cfg(all(debug_assertions, feature = "nightly"))]
+		backtrace: std::backtrace::Backtrace
+	},
 
-	#[error("Realm conflict! This file is included in multiple realms: {0}\nPlease tinker your config and resolve the realm conflicts.")]
-	RealmConflict(String),
+	#[error("Realm conflict! This file is included in multiple realms: {error}\nPlease tinker your config and resolve the realm conflicts.")]
+	RealmConflict {
+		error: String,
+		#[cfg(all(debug_assertions, feature = "nightly"))]
+		backtrace: std::backtrace::Backtrace
+	},
 
 	#[error("No Lua files were found in your addon using this inclusion configuration")]
-	NoLuaFiles,
+	NoLuaFiles {
+		#[cfg(all(debug_assertions, feature = "nightly"))]
+		backtrace: std::backtrace::Backtrace
+	},
 }
-impl From<std::io::Error> for PackingError {
-	fn from(error: std::io::Error) -> Self {
-		Self::IoError(error)
-	}
-}
+impl_error!(std::io::Error, PackingError::IoError);
+impl_error!(serde_json::Error, PackingError::ConfigError);
 impl From<glob::GlobError> for PackingError {
 	fn from(error: glob::GlobError) -> Self {
-		Self::IoError(error.into_error())
-	}
-}
-impl From<serde_json::Error> for PackingError {
-	fn from(error: serde_json::Error) -> Self {
-		Self::ConfigError(error)
+		Self::IoError {
+			error: error.into_error(),
+			#[cfg(all(debug_assertions, feature = "nightly"))]
+			backtrace: std::backtrace::Backtrace::force_capture()
+		}
 	}
 }
