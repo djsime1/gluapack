@@ -69,6 +69,16 @@ async fn main() {
 				.alias("mod")
 				.alias("modify")
 				.multiple(false)
+				.conflicts_with("no-copy")
+		)
+		.arg(
+			Arg::with_name("no-copy")
+				.global(true)
+				.help("Do not create a copy of the addon in the output directory")
+				.long("no-copy")
+				.short("c")
+				.multiple(false)
+				.conflicts_with("in-place")
 		)
 		.arg(
 			Arg::with_name("quiet")
@@ -135,9 +145,10 @@ async fn main() {
 			let path = addon_path!(args);
 			let in_place = args.is_present("in-place");
 			let out_dir = out_path!(args, path, in_place, "packed", "unpacked");
+			let no_copy = args.is_present("no-copy");
 			let quiet = args.is_present("quiet");
 
-			match (quiet, Packer::pack(path, out_dir, quiet).await) {
+			match (quiet, Packer::pack(path, out_dir, no_copy, quiet).await) {
 				(true, Ok(_)) => {},
 				(false, Ok((unpacked_files, packed_files, elapsed))) => {
 					println!();
@@ -162,9 +173,10 @@ async fn main() {
 			let path = addon_path!(args);
 			let in_place = args.is_present("in-place");
 			let out_dir = out_path!(args, path, in_place, "unpacked", "packed");
+			let no_copy = args.is_present("no-copy");
 			let quiet = args.is_present("quiet");
 
-			match (quiet, Unpacker::unpack(path, out_dir, quiet).await) {
+			match (quiet, Unpacker::unpack(path, out_dir, no_copy, quiet).await) {
 				(true, Ok(_)) => {},
 				(false, Ok((packed_files, unpacked_files, elapsed))) => {
 					println!();
