@@ -1,3 +1,5 @@
+#![cfg_attr(all(debug_assertions, feature = "nightly"), feature(backtrace))]
+
 #[macro_use]
 extern crate lazy_static;
 
@@ -22,6 +24,9 @@ pub const TERMINATOR_HACK: u8 = '|' as u8;
 async fn main() {
 	use clap::*;
 	use std::path::PathBuf;
+
+	#[cfg(all(debug_assertions, feature = "nightly"))]
+	use std::error::Error;
 
 	let stdin = App::new("gluapack")
 		.version(env!("CARGO_PKG_VERSION"))
@@ -146,6 +151,8 @@ async fn main() {
 						println!();
 					}
 					eprintln!("ERROR: {}", error);
+					#[cfg(all(feature = "nightly", debug_assertions))]
+					eprintln!("{:#?}", error.backtrace());
 					abort!();
 				},
 			}
@@ -171,6 +178,8 @@ async fn main() {
 						println!();
 					}
 					eprintln!("ERROR: {}", error);
+					#[cfg(all(feature = "nightly", debug_assertions))]
+					eprintln!("{:#?}", error.backtrace());
 					abort!();
 				},
 			}
