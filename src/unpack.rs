@@ -16,7 +16,7 @@ pub struct Unpacker {
 	pub quiet: bool
 }
 impl Unpacker {
-	pub async fn unpack(dir: PathBuf, out_dir: Option<PathBuf>, quiet: bool) -> Result<(usize, usize, Duration), UnpackingError> {
+	pub async fn unpack(dir: PathBuf, out_dir: Option<PathBuf>, no_copy: bool, quiet: bool) -> Result<(usize, usize, Duration), UnpackingError> {
 		quietln!(quiet, "Addon Path: {}", util::canonicalize(&dir).display());
 
 		let out_dir = if let Some(out_dir) = out_dir {
@@ -38,7 +38,26 @@ impl Unpacker {
 
 		let started = std::time::Instant::now();
 
-		let (sv_packed_file, cl_chunk_files, sh_chunk_files) = {
+		let (sv_packed_file, cl_chunk_files, sh_chunk_files) = if no_copy {
+			quietln!(quiet, "Discovering chunk files...");
+
+			let (mut cl_chunk_files, mut sh_chunk_files) = (vec![], vec![]);
+
+			for entry in util::glob(unpacker.dir.join("lua/gluapack/*/*.lua").to_string_lossy()).unwrap().filter_map(|result| result.ok()) {
+				let file_name = entry.file_name().as_ref().unwrap().to_string_lossy();
+				if file_name.ends_with(".sh.lua") {
+					sh_chunk_files.push(entry.clone());
+				} else if file_name.ends_with(".cl.lua") {
+					cl_chunk_files.push(entry.clone());
+				}
+			}
+
+			(
+				util::glob(unpacker.dir.join("lua/gluapack/autorun/*_gluapack_*.lua").to_string_lossy()).unwrap().find_map(|result| result.ok()),
+				cl_chunk_files,
+				sh_chunk_files
+			)
+		} else {
 			quietln!(quiet, "Copying addon to output directory...");
 			let dir = unpacker.dir.clone();
 			let out_dir = unpacker.out_dir.clone();
