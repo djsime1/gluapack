@@ -191,7 +191,7 @@ impl Unpacker {
 				Err(error) => if let std::io::ErrorKind::UnexpectedEof = error.kind() {
 					break;
 				} else {
-					return Err(UnpackingError::IoError(error));
+					return Err(error!(UnpackingError::IoError(error)));
 				},
 			}
 		}
@@ -253,10 +253,10 @@ impl Unpacker {
 			match read_entry(&self.out_dir, &mut f) {
 				Ok(true) => break,
 				Ok(false) => entries += 1,
-				Err(UnpackingError::IoError(error)) => if let std::io::ErrorKind::UnexpectedEof = error.kind() {
+				Err(UnpackingError::IoError { error, .. }) => if let std::io::ErrorKind::UnexpectedEof = error.kind() {
 					break;
 				} else {
-					return Err(UnpackingError::IoError(error));
+					return Err(error!(UnpackingError::IoError(error)));
 				}
 				Err(error) => return Err(error),
 			}
@@ -268,27 +268,27 @@ impl Unpacker {
 
 #[derive(Debug, thiserror::Error)]
 pub enum UnpackingError {
-	#[error("IO error: {0}")]
-	IoError(std::io::Error),
+	#[error("IO error: {error}")]
+	IoError {
+		error: std::io::Error,
+		#[cfg(all(debug_assertions, feature = "nightly"))]
+		backtrace: std::backtrace::Backtrace
+	},
 
-	#[error("UTF-8 error: {0}")]
-	Utf8Error(std::str::Utf8Error),
+	#[error("UTF-8 error: {error}")]
+	Utf8Error {
+		error: std::str::Utf8Error,
+		#[cfg(all(debug_assertions, feature = "nightly"))]
+		backtrace: std::backtrace::Backtrace
+	},
 
-	#[error("File format error: {0}")]
-	ParseIntError(std::num::ParseIntError),
+	#[error("File format error: {error}")]
+	ParseIntError {
+		error: std::num::ParseIntError,
+		#[cfg(all(debug_assertions, feature = "nightly"))]
+		backtrace: std::backtrace::Backtrace
+	},
 }
-impl From<std::io::Error> for UnpackingError {
-	fn from(error: std::io::Error) -> Self {
-		Self::IoError(error)
-	}
-}
-impl From<std::str::Utf8Error> for UnpackingError {
-	fn from(error: std::str::Utf8Error) -> Self {
-		Self::Utf8Error(error)
-	}
-}
-impl From<std::num::ParseIntError> for UnpackingError {
-	fn from(error: std::num::ParseIntError) -> Self {
-		Self::ParseIntError(error)
-	}
-}
+impl_error!(std::io::Error, UnpackingError::IoError);
+impl_error!(std::str::Utf8Error, UnpackingError::Utf8Error);
+impl_error!(std::num::ParseIntError, UnpackingError::ParseIntError);
