@@ -1,4 +1,4 @@
-use std::{fs::File, path::{Path, PathBuf}};
+use std::{fs::File, path::PathBuf};
 
 use serde::de::{Unexpected, Visitor};
 
@@ -27,17 +27,18 @@ macro_rules! impl_default {
 #[derive(derive_more::Deref, derive_more::DerefMut, Clone, PartialEq, Eq)]
 pub struct GlobPattern(pub glob::Pattern);
 impl GlobPattern {
-	pub(crate) fn new(pattern: &'static str) -> Self {
+	/// Panics if the glob pattern is invalid.
+	pub fn new(pattern: &'static str) -> Self {
 		Self(glob::Pattern::new(pattern).unwrap())
 	}
 
-	pub(crate) fn matches<S: AsRef<str>>(&self, str: S) -> bool {
+	pub fn matches<S: AsRef<str>>(&self, str: S) -> bool {
 		let mut opt = glob::MatchOptions::new();
 		opt.require_literal_separator = true;
 		self.matches_with(str.as_ref(), opt)
 	}
 
-	pub(crate) fn matches_path<P: AsRef<std::path::Path>>(&self, path: P) -> bool {
+	pub fn matches_path<P: AsRef<std::path::Path>>(&self, path: P) -> bool {
 		let mut opt = glob::MatchOptions::new();
 		opt.require_literal_separator = true;
 		self.matches_path_with(path.as_ref(), opt)
@@ -124,28 +125,6 @@ impl Config {
 			let mut f = File::open(path)?;
 			Ok(serde_json::from_reader(&mut f)?)
 		}).await.expect("Failed to join thread")
-	}
-
-	pub(crate) fn merge(&mut self, other: &Config) {
-		self.unique_id = other.unique_id.to_owned();
-
-		fn merge_vec<T: PartialEq + ToOwned<Owned = T>>(this: &mut Vec<T>, other: &Vec<T>) {
-			for x in other {
-				for i in 0..this.len() {
-					if x == &this[i] {
-						this.push(x.to_owned());
-					}
-				}
-			}
-		}
-
-		merge_vec(&mut self.include_sh, &other.include_sh);
-		merge_vec(&mut self.include_cl, &other.include_cl);
-		merge_vec(&mut self.include_sv, &other.include_sv);
-		merge_vec(&mut self.exclude, &other.exclude);
-		merge_vec(&mut self.entry_cl, &other.entry_cl);
-		merge_vec(&mut self.entry_sh, &other.entry_sh);
-		merge_vec(&mut self.entry_sv, &other.entry_sv);
 	}
 
 	pub(crate) fn dump_json(&self) {

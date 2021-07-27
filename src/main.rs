@@ -12,7 +12,6 @@ pub(crate) use consts::*;
 mod config;
 mod pack;
 mod unpack;
-mod ship;
 
 use pack::Packer;
 use unpack::Unpacker;

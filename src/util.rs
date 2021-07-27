@@ -57,7 +57,7 @@ macro_rules! error {
 
 /// Returns an iterator that will find all matches of the given glob pattern.
 #[inline(always)]
-pub(crate) fn glob<S: AsRef<str>>(pattern: S) -> Result<glob::Paths, glob::PatternError> {
+pub fn glob<S: AsRef<str>>(pattern: S) -> Result<glob::Paths, glob::PatternError> {
 	glob::glob_with(pattern.as_ref(), {
 		let mut opt = glob::MatchOptions::new();
 		opt.require_literal_separator = true;

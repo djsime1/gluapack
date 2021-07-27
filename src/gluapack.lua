@@ -73,6 +73,8 @@ if GLUAPACK_SUCCESS == nil then
 	end
 end
 
+AddCSLuaFile()
+
 GLUAPACK_SUCCESS = false
 
 do
@@ -166,14 +168,14 @@ if CLIENT then
 		local cachePath = ("cache/lua/%s.lua"):format(clientCacheManifest[realm][tonumber(index)])
 
 		CompileFile(path) -- This triggers the game to write to cache/lua/<clientCacheManifest[path]>.lua
-		assert(file_Exists(cachePath, "GAME"), ("Cached packed file doesn't exist in %s"):format(cachePath))
+		assert(file_Exists(cachePath, "GAME"), ("Cached packed file (%s) doesn't exist in %s"):format(path, cachePath))
 
 		local f = file_Open(cachePath, "rb", "GAME")
 
 		-- Skip 32 bytes (SHA256 header)
 		f:Skip(32)
 
-		-- Read to EOL
+		-- Read to EOF
 		local chunk = f:Read(f:Size() - 32)
 		f:Close()
 

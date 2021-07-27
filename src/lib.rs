@@ -12,7 +12,7 @@ pub use consts::MAX_LUA_SIZE;
 
 mod config;
 pub use config::{GlobPattern, Config};
-pub use glob;
+pub use util::glob;
 
 mod pack;
 pub use pack::PackingError;
@@ -21,8 +21,11 @@ mod unpack;
 pub use unpack::UnpackingError;
 
 mod ship;
+pub use ship::*;
 
-use std::{future::Future, path::{Path, PathBuf}, time::Duration};
+pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
+use std::{future::Future, path::PathBuf, time::Duration};
 
 /// Packs an addon.
 ///
@@ -34,9 +37,4 @@ pub fn pack<P: ToOwned<Owned = PathBuf>>(dir: P, out_dir: Option<P>, no_copy: bo
 /// Unpacks an addon.
 pub fn unpack<P: ToOwned<Owned = PathBuf>>(dir: P, out_dir: Option<P>, no_copy: bool) -> impl Future<Output = Result<(usize, usize, Duration), UnpackingError>> {
 	unpack::Unpacker::unpack(dir.to_owned(), out_dir.map(|x| x.to_owned()), no_copy, true)
-}
-
-/// Packs addons en-masse. Will also merge any found gluapack addons into the shipped package.
-pub fn ship() {
-
 }

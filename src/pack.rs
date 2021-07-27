@@ -1,7 +1,7 @@
 // The order of operations should be: sv cl sh
 
 use crate::{MAX_LUA_SIZE, MEM_PREALLOCATE_MAX, TERMINATOR_HACK, util, config::{Config, GlobPattern}};
-use std::{collections::HashSet, convert::TryInto, path::PathBuf, time::{Duration, Instant}};
+use std::{collections::HashSet, convert::TryInto, path::PathBuf, time::Duration};
 use futures_util::{FutureExt, future};
 use sha2::Digest;
 
@@ -25,9 +25,10 @@ fn commentify(bytes: Vec<u8>) -> Vec<u8> {
 	escaped
 }
 
-struct LuaFile {
-	path: String,
-	contents: Vec<u8>
+#[derive(Debug, Clone)]
+pub(crate) struct LuaFile {
+	pub(crate) path: String,
+	pub(crate) contents: Vec<u8>
 }
 impl std::hash::Hash for LuaFile {
 	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -42,7 +43,6 @@ impl PartialEq for LuaFile {
 impl Eq for LuaFile {}
 
 pub(crate) struct Packer {
-	pub(crate) dir: PathBuf,
 	pub(crate) out_dir: PathBuf,
 	pub(crate) config: Config,
 	pub(crate) unique_id: Option<String>,
@@ -51,7 +51,7 @@ pub(crate) struct Packer {
 	pub(crate) no_copy: bool
 }
 impl Packer {
-	pub(crate) async fn pack(dir: PathBuf, out_dir: Option<PathBuf>, no_copy: bool, quiet: bool, config: Option<Config>) -> Result<(usize, usize, Duration), PackingError> {
+	pub(crate) async fn pack(mut dir: PathBuf, out_dir: Option<PathBuf>, no_copy: bool, quiet: bool, config: Option<Config>) -> Result<(usize, usize, Duration), PackingError> {
 		let mut config = match config {
 			Some(config) => config,
 			None => {
@@ -91,7 +91,6 @@ impl Packer {
 		// Start packing
 		let mut packer = Packer {
 			out_dir,
-			dir,
 			config,
 			unique_id: None,
 			quiet,
@@ -104,15 +103,51 @@ impl Packer {
 		quietln!(quiet, "Collecting Lua files...");
 
 		packer.out_dir.push("lua");
-		packer.dir.push("lua");
+		dir.push("lua");
 
 		let ((sv, sv_entry_files), (cl, cl_entry_files), (sh, sh_entry_files)) = tokio::try_join!(
-			packer.collect_lua_files(&packer.config.include_sv, &packer.config.exclude, &packer.config.entry_sv),
-			packer.collect_lua_files(&packer.config.include_cl, &packer.config.exclude, &packer.config.entry_cl),
-			packer.collect_lua_files(&packer.config.include_sh, &packer.config.exclude, &packer.config.entry_sh),
+			packer.collect_lua_files(&dir, &packer.config.include_sv, &packer.config.entry_sv),
+			packer.collect_lua_files(&dir, &packer.config.include_cl, &packer.config.entry_cl),
+			packer.collect_lua_files(&dir, &packer.config.include_sh, &packer.config.entry_sh),
 		)?;
 
-		packer.process(started, sv, sv_entry_files, cl, cl_entry_files, sh, sh_entry_files).await
+		{
+			quietln!(quiet, "Checking realms...");
+			let mut all_lua_files = HashSet::new();
+			for lua_file in sv.iter().chain(sh.iter()).chain(cl.iter()) {
+				if !all_lua_files.insert(lua_file.path.clone()) {
+					return Err(error!(PackingError::RealmConflict(lua_file.path.clone())));
+				}
+			}
+		}
+
+		let total_unpacked_files = sv.len() + cl.len() + sh.len();
+		if total_unpacked_files == 0 {
+			return Err(error!(PackingError::NoLuaFiles));
+		}
+
+		if !in_place {
+			if !no_copy {
+				quietln!(quiet, "Copying addon to output directory...");
+				packer.copy_addon(&dir).await?;
+			}
+		} else {
+			quietln!(quiet, "Deleting old gluapack files...");
+			packer.delete_old_gluapack_files().await?;
+		}
+
+		let total_packed_files = packer.process(
+			sv.into_iter(),
+			sv_entry_files.into_iter(),
+
+			cl.into_iter(),
+			cl_entry_files.into_iter(),
+
+			sh.into_iter(),
+			sh_entry_files.into_iter()
+		).await?;
+
+		Ok((total_unpacked_files, total_packed_files + 3, started.elapsed()))
 	}
 
 	fn unique_id(&self) -> &String {
@@ -120,7 +155,7 @@ impl Packer {
 		self.unique_id.as_ref().unwrap()
 	}
 
-	async fn collect_lua_files(&self, patterns: &[GlobPattern], excludes: &[GlobPattern], entries: &[GlobPattern]) -> Result<(HashSet<LuaFile>, Vec<String>), PackingError> {
+	async fn collect_lua_files(&self, dir: &PathBuf, patterns: &[GlobPattern], entries: &[GlobPattern]) -> Result<(HashSet<LuaFile>, Vec<String>), PackingError> {
 		let mut lua_files = HashSet::new();
 		let mut entry_files = vec![];
 		let mut abort_handles = vec![];
@@ -129,17 +164,17 @@ impl Packer {
 
 		for pattern in patterns.iter().chain(entries.iter()) {
 			for path in {
-				util::glob(&self.dir.join(pattern.as_str()).to_string_lossy())
+				util::glob(&dir.join(pattern.as_str()).to_string_lossy())
 					.expect("Failed to construct glob when joining addon directory")
 					.filter(|result| {
 						match result {
-							Ok(path) => excludes.iter().find(|exclude| exclude.matches_path(path.strip_prefix(&self.dir).unwrap())).is_none(),
+							Ok(path) => self.config.exclude.iter().find(|exclude| exclude.matches_path(path.strip_prefix(&dir).unwrap())).is_none(),
 							Err(_) => true,
 						}
 					})
 			} {
 				let fs_path = path?;
-				let path = fs_path.strip_prefix(&self.dir).unwrap().to_string_lossy().into_owned().replace('\\', "/");
+				let path = fs_path.strip_prefix(&dir).unwrap().to_string_lossy().into_owned().replace('\\', "/");
 				let tx = tx.clone();
 
 				if !lua_files.insert(LuaFile {
@@ -190,7 +225,7 @@ impl Packer {
 		Ok((lua_files, entry_files))
 	}
 
-	async fn copy_addon(&self) -> Result<(), std::io::Error> {
+	async fn copy_addon(&self, dir: &PathBuf) -> Result<(), std::io::Error> {
 		let out_dir = self.out_dir.parent().unwrap(); // pop lua/
 
 		tokio::fs::remove_dir_all(out_dir).await?;
@@ -241,7 +276,7 @@ impl Packer {
 			Ok(())
 		}
 
-		let from = self.dir.parent().unwrap().to_path_buf();
+		let from = dir.parent().unwrap().to_path_buf();
 		let to = out_dir.to_path_buf();
 
 		tokio::task::spawn_blocking(move || {
@@ -296,8 +331,11 @@ impl Packer {
 		Ok(())
 	}
 
-	fn pack_lua_files(lua_files: HashSet<LuaFile>, is_sent_to_client: bool) -> (Vec<String>, Vec<u8>) {
-		use std::io::Write;
+	async fn pack_lua_files<L>(lua_files: L, is_sent_to_client: bool) -> (Vec<String>, Vec<u8>)
+	where
+		L: Iterator<Item = LuaFile> + ExactSizeIterator
+	{
+		use tokio::io::AsyncWriteExt;
 
 		let mut file_list = Vec::with_capacity(lua_files.len());
 
@@ -305,14 +343,14 @@ impl Packer {
 		for mut lua_file in lua_files.into_iter() {
 			superchunk.reserve_exact(lua_file.contents.len() + lua_file.path.len() + 4);
 
-			superchunk.write_all(&mut lua_file.path.as_bytes()).expect("Failed to write script path into superchunk");
+			superchunk.write_all(&mut lua_file.path.as_bytes()).await.expect("Failed to write script path into superchunk");
 			if is_sent_to_client {
 				// We can't use NUL to terminate because clientside Lua files will only send up to the NUL byte (fucking C strings)
 				// We can just use a | instead
 				superchunk.push(TERMINATOR_HACK);
 
 				// Write the length of the file as a hex string since we can't use NUL to terminate
-				superchunk.write_all(format!("{:x}", lua_file.contents.len()).as_bytes()).expect("Failed to write Lua file length into superchunk");
+				superchunk.write_all(format!("{:x}", lua_file.contents.len()).as_bytes()).await.expect("Failed to write Lua file length into superchunk");
 				superchunk.push(TERMINATOR_HACK);
 			} else {
 				superchunk.push(0);
@@ -323,7 +361,7 @@ impl Packer {
 				}
 			}
 
-			superchunk.write_all(&mut lua_file.contents).expect("Failed to write Lua file into superchunk");
+			superchunk.write_all(&mut lua_file.contents).await.expect("Failed to write Lua file into superchunk");
 
 			file_list.push(lua_file.path);
 		}
@@ -333,6 +371,10 @@ impl Packer {
 
 	async fn write_packed_chunks(&self, bytes: Vec<u8>, chunk_name: &'static str) -> Result<(Vec<[u8; 20]>, usize), PackingError> {
 		use tokio::io::AsyncWriteExt;
+
+		if bytes.is_empty() {
+			return Ok((vec![], 0));
+		}
 
 		let gluapack_dir = self.out_dir.join(format!("gluapack/{}", self.unique_id()));
 
@@ -434,11 +476,14 @@ impl Packer {
 		Ok(())
 	}
 
-	async fn write_loader(&self, sv_entry_files: Vec<String>, cl_entry_files: Vec<String>, sh_entry_files: Vec<String>) -> Result<(), PackingError> {
+	async fn write_loader<S>(&self, sv_entry_files: S, cl_entry_files: S, sh_entry_files: S) -> Result<(), PackingError>
+	where
+		S: Iterator<Item = String> + ExactSizeIterator
+	{
 		const GLUAPACK_LOADER: &'static str = include_str!("gluapack.lua");
 
-		fn join_entry_files(entry_files: Vec<String>) -> String {
-			if entry_files.is_empty() {
+		async fn join_entry_files<S: Iterator<Item = String> + ExactSizeIterator>(entry_files: S) -> String {
+			if entry_files.len() == 0 {
 				"{}".to_string()
 			} else {
 				let mut output = "{".to_string();
@@ -455,11 +500,11 @@ impl Packer {
 			}
 		}
 
-		let (sv_entry_files, cl_entry_files, sh_entry_files) = tokio::try_join!(
-			tokio::task::spawn_blocking(move || join_entry_files(sv_entry_files)),
-			tokio::task::spawn_blocking(move || join_entry_files(cl_entry_files)),
-			tokio::task::spawn_blocking(move || join_entry_files(sh_entry_files)),
-		).expect("Failed to join threads");
+		let (sv_entry_files, cl_entry_files, sh_entry_files) = tokio::join!(
+			join_entry_files(sv_entry_files),
+			join_entry_files(cl_entry_files),
+			join_entry_files(sh_entry_files),
+		);
 
 		let loader = GLUAPACK_LOADER
 			.replacen("{ENTRY_FILES_SV}", &sv_entry_files, 1)
@@ -501,39 +546,18 @@ impl Packer {
 		Ok(())
 	}
 
-	async fn process(mut self, started: Instant, sv: HashSet<LuaFile>, sv_entry_files: Vec<String>, cl: HashSet<LuaFile>, cl_entry_files: Vec<String>, sh: HashSet<LuaFile>, sh_entry_files: Vec<String>) -> Result<(usize, usize, Duration), PackingError> {
-		{
-			quietln!(self.quiet, "Checking realms...");
-			let mut all_lua_files = HashSet::new();
-			for lua_file in sv.iter().chain(sh.iter()).chain(cl.iter()) {
-				if !all_lua_files.insert(lua_file.path.clone()) {
-					return Err(error!(PackingError::RealmConflict(lua_file.path.clone())));
-				}
-			}
-		}
-
-		let total_unpacked_files = sv.len() + cl.len() + sh.len();
-		if total_unpacked_files == 0 {
-			return Err(error!(PackingError::NoLuaFiles));
-		}
-
-		if !self.in_place {
-			if !self.no_copy {
-				quietln!(self.quiet, "Copying addon to output directory...");
-				self.copy_addon().await?;
-			}
-		} else {
-			quietln!(self.quiet, "Deleting old gluapack files...");
-			self.delete_old_gluapack_files().await?;
-		}
-
+	pub(crate) async fn process<L, S>(mut self, sv: L, sv_entry_files: S, cl: L, cl_entry_files: S, sh: L, sh_entry_files: S) -> Result<usize, PackingError>
+	where
+		L: Iterator<Item = LuaFile> + ExactSizeIterator + Send,
+		S: Iterator<Item = String> + ExactSizeIterator + Send
+	{
 		quietln!(self.quiet, "Packing...");
 
-		let ((sv_paths, sv), (cl_paths, cl), (sh_paths, sh)) = tokio::try_join!(
-			tokio::task::spawn_blocking(move || Packer::pack_lua_files(sv, false)),
-			tokio::task::spawn_blocking(move || Packer::pack_lua_files(cl, true)),
-			tokio::task::spawn_blocking(move || Packer::pack_lua_files(sh, true))
-		).expect("Failed to join threads");
+		let ((sv_paths, sv), (cl_paths, cl), (sh_paths, sh)) = tokio::join!(
+			Packer::pack_lua_files(sv, false),
+			Packer::pack_lua_files(cl, true),
+			Packer::pack_lua_files(sh, true)
+		);
 
 		self.unique_id = Some(self.config.unique_id.as_ref().map(|x| x.to_owned()).unwrap_or_else(|| {
 			const HASH_SUBHEX_LENGTH: usize = 16;
@@ -579,7 +603,7 @@ impl Packer {
 			self.delete_unpacked(sv_paths, cl_paths, sh_paths).await?;
 		}
 
-		Ok((total_unpacked_files, total_packed_files + 3, started.elapsed()))
+		Ok(total_packed_files)
 	}
 }
 

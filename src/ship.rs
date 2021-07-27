@@ -1,46 +1,138 @@
 use std::path::PathBuf;
 
-use crate::{util, config::Config, pack::PackingError};
+use crate::{MAX_LUA_SIZE, config::Config, pack::{LuaFile, Packer, PackingError}};
 
-#[derive(Default)]
-pub struct ShipBuilder {
-	lua_folders: Vec<PathBuf>,
-	config: Option<Config>
+#[derive(Debug, Clone, Copy)]
+pub enum Realm {
+	Serverside,
+	Clientside,
+	Shared
 }
-impl ShipBuilder {
-	/// Creates a default ShipBuilder.
-	pub fn new() -> Self {
-		Self::default()
+
+#[derive(Debug, Clone)]
+pub struct ShipmentFile {
+	realm: Realm,
+	entry: bool,
+	path: String,
+	contents: Vec<u8>
+}
+impl ShipmentFile {
+	pub fn from_bytes(realm: Realm, entry: bool, path: String, contents: Vec<u8>) -> ShipmentFile {
+		ShipmentFile { realm, entry, path, contents }
 	}
 
-	/// Sets the override config to be used for any addon included in this shipment.
-	///
-	/// This will override any addon's config specified in the `gluapack.json` file.
-	pub fn override_config(&mut self, override_config: Option<Config>) -> &mut Self {
-		self.config = override_config;
+	pub fn from_reader<R: std::io::Read>(realm: Realm, entry: bool, path: String, reader: &mut R) -> Result<ShipmentFile, std::io::Error> {
+		let mut buf = Vec::with_capacity(MAX_LUA_SIZE);
+		reader.read_to_end(&mut buf)?;
+		buf.shrink_to_fit();
+
+		Ok(ShipmentFile {
+			contents: buf,
+			realm,
+			entry,
+			path,
+		})
+	}
+}
+
+/// The shipment builder allows you to programmatically build a gluapacked addon by manually providing
+/// serverside, clientside and shared files and entry files.
+///
+/// **No duplication checks are done for you** - it is up to you to ensure that your files are unique.
+#[derive(Default, Debug, Clone)]
+pub struct ShipmentBuilder {
+	sv: Vec<LuaFile>,
+	sv_entry_files: Vec<String>,
+
+	sh: Vec<LuaFile>,
+	sh_entry_files: Vec<String>,
+
+	cl: Vec<LuaFile>,
+	cl_entry_files: Vec<String>,
+}
+impl ShipmentBuilder {
+	pub fn add(&mut self, file: ShipmentFile) -> &mut Self {
+		let (files, entry_files) = match file.realm {
+			Realm::Serverside => (&mut self.sv, &mut self.sv_entry_files),
+			Realm::Clientside => (&mut self.cl, &mut self.cl_entry_files),
+			Realm::Shared => (&mut self.sh, &mut self.sh_entry_files),
+		};
+
+		if file.entry {
+			entry_files.push(file.path.clone());
+		}
+
+		files.push(LuaFile {
+			path: file.path,
+			contents: file.contents
+		});
+
 		self
 	}
 
-	/// Includes a Lua-containing folder to be shipped.
-	pub fn include(&mut self, path: PathBuf) -> &mut Self {
-		self.lua_folders.push(path);
+	pub fn reserve(&mut self, realm: Realm, entry: bool, additional: usize) -> &mut Self {
+		match realm {
+			Realm::Serverside => self.reserve_sv(entry, additional),
+			Realm::Clientside => self.reserve_cl(entry, additional),
+			Realm::Shared => self.reserve_sh(entry, additional),
+		}
+	}
+
+	pub fn reserve_sv(&mut self, entry: bool, additional: usize) -> &mut Self {
+		if entry {
+			self.sv_entry_files.reserve(additional);
+		} else {
+			self.sv.reserve(additional);
+		}
 		self
 	}
 
-	/// Includes a slice of Lua-containing folders to be shipped.
-	pub fn includes(&mut self, paths: &[PathBuf]) -> &mut Self {
-		self.lua_folders.extend_from_slice(paths);
+	pub fn reserve_cl(&mut self, entry: bool, additional: usize) -> &mut Self {
+		if entry {
+			self.cl_entry_files.reserve(additional);
+		} else {
+			self.cl.reserve(additional);
+		}
 		self
 	}
 
-	/// Includes a glob pattern of Lua-containing folders to be shipped.
-	pub fn include_glob<S: AsRef<str>>(&mut self, glob: S) -> Result<&mut Self, glob::PatternError> {
-		self.includes(&util::glob(glob.as_ref())?.filter_map(|x| x.ok()).collect::<Vec<PathBuf>>());
-		Ok(self)
+	pub fn reserve_sh(&mut self, entry: bool, additional: usize) -> &mut Self {
+		if entry {
+			self.sh_entry_files.reserve(additional);
+		} else {
+			self.sh.reserve(additional);
+		}
+		self
 	}
 
-	/// Consumes the builder and packs the ship.
-	pub fn ship(mut self, out_dir: PathBuf) -> Result<(), PackingError> {
-		todo!()
+	/// Consumes the builder and packs the shipment.
+	pub async fn ship(self, out_dir: PathBuf, unique_id: Option<String>) -> Result<(usize, usize), PackingError> {
+		let packer = Packer {
+			out_dir,
+			config: {
+				let mut conf = Config::default();
+				conf.unique_id = unique_id;
+				conf
+			},
+			unique_id: None,
+			quiet: true,
+			in_place: false,
+			no_copy: true,
+		};
+
+		let total_unpacked_files = self.sv.len() + self.cl.len() + self.sh.len();
+
+		let total_packed_files = packer.process(
+			self.sv.into_iter(),
+			self.sv_entry_files.into_iter(),
+
+			self.cl.into_iter(),
+			self.cl_entry_files.into_iter(),
+
+			self.sh.into_iter(),
+			self.sh_entry_files.into_iter()
+		).await?;
+
+		Ok((total_unpacked_files, total_packed_files + 3))
 	}
 }
