@@ -9,6 +9,8 @@ mod util;
 mod consts;
 pub(crate) use consts::*;
 
+mod load_order;
+
 mod config;
 mod pack;
 mod unpack;

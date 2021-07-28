@@ -5,17 +5,15 @@
 
 local function includeEntryFiles()
 	for _, v in ipairs({ENTRY_FILES_SH}) do
-		AddCSLuaFile(v)
 		include(v)
 	end
 
-	if CLIENT then
-		for _, v in ipairs({ENTRY_FILES_CL}) do
-			AddCSLuaFile(v)
+	if SERVER then
+		for _, v in ipairs({ENTRY_FILES_SV}) do
 			include(v)
 		end
 	else
-		for _, v in ipairs({ENTRY_FILES_SV}) do
+		for _, v in ipairs({ENTRY_FILES_CL}) do
 			include(v)
 		end
 	end
@@ -296,7 +294,7 @@ for _, d in ipairs(select(2, file_Find("gluapack/*", "LUA"))) do
 end
 
 local function getRelativeDir(path)
-	return (debug.getinfo(3, "S").short_src:gsub("/[^/]+$", ""))
+	return (debug.getinfo(3, "S").short_src:gsub("/[^/]+$", ""):gsub("gamemodes/", ""))
 end
 
 if CLIENT then
@@ -463,16 +461,17 @@ function _G.include(path)
 		-- Saves us from resolving the relative path
 		return include(path)
 	else
-		vfsPath = ("gluapack/vfs/%s/%s.txt"):format(getRelativeDir(path), path)
+		local relPath = ("%s/%s"):format(getRelativeDir(path), path)
+		vfsPath = ("gluapack/vfs/%s.txt"):format(relPath)
 		if file_Exists(vfsPath, "DATA") then
-			local f = CompileString(file_Read(vfsPath, "DATA"), path)()
+			local f = CompileString(file_Read(vfsPath, "DATA"), relPath)()
 			if f then
 				return f()
 			else
 				return
 			end
 		else
-			return include(path)
+			return include(relPath)
 		end
 	end
 end

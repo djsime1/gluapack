@@ -10,6 +10,8 @@ mod consts;
 pub(crate) use consts::*;
 pub use consts::MAX_LUA_SIZE;
 
+mod load_order;
+
 mod config;
 pub use config::{GlobPattern, Config};
 pub use util::glob;

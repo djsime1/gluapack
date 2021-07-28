@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 use crate::{MAX_LUA_SIZE, config::Config, pack::{LuaFile, Packer, PackingError}};
 
@@ -37,18 +37,16 @@ impl ShipmentFile {
 
 /// The shipment builder allows you to programmatically build a gluapacked addon by manually providing
 /// serverside, clientside and shared files and entry files.
-///
-/// **No duplication checks are done for you** - it is up to you to ensure that your files are unique.
 #[derive(Default, Debug, Clone)]
 pub struct ShipmentBuilder {
-	sv: Vec<LuaFile>,
-	sv_entry_files: Vec<String>,
+	sv: HashSet<LuaFile>,
+	sv_entry_files: HashSet<String>,
 
-	sh: Vec<LuaFile>,
-	sh_entry_files: Vec<String>,
+	sh: HashSet<LuaFile>,
+	sh_entry_files: HashSet<String>,
 
-	cl: Vec<LuaFile>,
-	cl_entry_files: Vec<String>,
+	cl: HashSet<LuaFile>,
+	cl_entry_files: HashSet<String>,
 }
 impl ShipmentBuilder {
 	pub fn add(&mut self, file: ShipmentFile) -> &mut Self {
@@ -59,10 +57,10 @@ impl ShipmentBuilder {
 		};
 
 		if file.entry {
-			entry_files.push(file.path.clone());
+			entry_files.insert(file.path.clone());
 		}
 
-		files.push(LuaFile {
+		files.insert(LuaFile {
 			path: file.path,
 			contents: file.contents
 		});

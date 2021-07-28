@@ -1,29 +1,9 @@
 // The order of operations should be: sv cl sh
 
-use crate::{MAX_LUA_SIZE, MEM_PREALLOCATE_MAX, TERMINATOR_HACK, util, config::{Config, GlobPattern}};
+use crate::{MAX_LUA_SIZE, MEM_PREALLOCATE_MAX, TERMINATOR_HACK, config::{Config, GlobPattern}, load_order, util};
 use std::{collections::HashSet, convert::TryInto, path::PathBuf, time::Duration};
 use futures_util::{FutureExt, future};
 use sha2::Digest;
-
-/// Lua comment
-const COMMENT_START: &'static [u8; 2] = b"--";
-
-/// Prepends `--` to every line in the byte vector.
-fn commentify(bytes: Vec<u8>) -> Vec<u8> {
-	const NEWLINE: u8 = '\n' as u8;
-	let mut escaped = Vec::with_capacity(bytes.len());
-	escaped.push('-' as u8);
-	escaped.push('-' as u8);
-	for byte in bytes {
-		escaped.push(byte);
-		if byte == NEWLINE {
-			escaped.reserve(2);
-			escaped.push('-' as u8);
-			escaped.push('-' as u8);
-		}
-	}
-	escaped
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct LuaFile {
@@ -370,7 +350,9 @@ impl Packer {
 	}
 
 	async fn write_packed_chunks(&self, bytes: Vec<u8>, chunk_name: &'static str) -> Result<(Vec<[u8; 20]>, usize), PackingError> {
-		use tokio::io::AsyncWriteExt;
+		const NEWLINE_BYTE: u8 = '\n' as u8;
+		const DASH_BYTE: u8 = '-' as u8;
+		const CARRIAGE_BYTE: u8 = '\r' as u8;
 
 		if bytes.is_empty() {
 			return Ok((vec![], 0));
@@ -378,61 +360,108 @@ impl Packer {
 
 		let gluapack_dir = self.out_dir.join(format!("gluapack/{}", self.unique_id()));
 
-		let is_sent_to_client = matches!(chunk_name, "sh" | "cl");
-		if is_sent_to_client {
-			let mut chunk_n = 0;
+		let mut hashes = vec![];
 
-			let hashes = future::try_join_all(
-				commentify(bytes).chunks(MAX_LUA_SIZE).enumerate().map(|(i, chunk)| {
+		let mut f = Vec::with_capacity(MAX_LUA_SIZE);
+		f.push('-' as u8);
+		f.push('-' as u8);
+
+		let mut chunk_n = 1;
+		let mut written = 2;
+
+		let mut sha256 = sha2::Sha256::new();
+		sha256.update(b"--");
+
+		macro_rules! next_chunk {
+			(@write) => {
+				std::fs::write(gluapack_dir.join(format!("gluapack.{}.{}.lua", chunk_n, chunk_name)), f)?;
+
+				hashes.push({
+					sha256.update(&[0u8]);
+					sha256.finalize()[0..20].try_into().unwrap()
+				});
+			};
+
+			() => {
+				if f.len() > 0 {
+					next_chunk!(@write);
+
 					chunk_n += 1;
-					let file_name = format!("gluapack.{}.{}.lua", i + 1, chunk_name);
-					let path = gluapack_dir.join(&file_name);
-					async move {
-						if !chunk.starts_with(COMMENT_START) {
-							let mut f = tokio::fs::File::create(&path).await?;
-							f.write_all(COMMENT_START).await?;
-							f.write_all(&chunk).await?;
+					written = 2;
 
-							Result::<[u8; 20], std::io::Error>::Ok({
-								let mut sha256 = sha2::Sha256::new();
-								sha256.update(COMMENT_START);
-								sha256.update(chunk);
-								sha256.update(&[0u8]);
+					sha256 = sha2::Sha256::new();
+					sha256.update(b"--");
 
-								let sha256 = sha256.finalize();
-								sha256[0..20].try_into().unwrap()
-							})
-						} else {
-							tokio::fs::write(&path, &chunk).await?;
-
-							Result::<[u8; 20], std::io::Error>::Ok({
-								let mut sha256 = sha2::Sha256::new();
-								sha256.update(chunk);
-								sha256.update(&[0u8]);
-
-								let sha256 = sha256.finalize();
-								sha256[0..20].try_into().unwrap()
-							})
-						}
-					}
-				})
-			).await?;
-
-			Ok((hashes, chunk_n))
-		} else {
-			let mut chunk_n = 0;
-
-			future::try_join_all(
-				bytes.chunks(MAX_LUA_SIZE).enumerate().map(|(i, chunk)| {
-					chunk_n += 1;
-					let file_name = format!("gluapack.{}.{}.lua", i + 1, chunk_name);
-					let path = gluapack_dir.join(&file_name);
-					tokio::fs::write(path, chunk)
-				})
-			).await?;
-
-			Ok((vec![], chunk_n))
+					f = Vec::with_capacity(MAX_LUA_SIZE);
+					f.push('-' as u8);
+					f.push('-' as u8);
+				}
+			}
 		}
+
+		let mut iter = bytes.into_iter();
+		while let Some(byte) = iter.next() {
+			if byte == '\r' as u8 {
+				match iter.next() {
+					Some(NEWLINE_BYTE) => {
+						if written + 4 > MAX_LUA_SIZE {
+							next_chunk!();
+						}
+						written += 4;
+
+						sha256.update(b"\r\n--");
+						f.push('\r' as u8);
+						f.push('\n' as u8);
+						f.push('-' as u8);
+						f.push('-' as u8);
+					},
+					Some(next_byte) => {
+						if written + 2 > MAX_LUA_SIZE {
+							next_chunk!();
+						}
+						written += 2;
+
+						sha256.update(b"\r");
+						sha256.update(&[next_byte]);
+						f.push('\r' as u8);
+						f.push(next_byte);
+					},
+					None => {
+						if written + 1 > MAX_LUA_SIZE {
+							next_chunk!();
+						}
+						written += 1;
+
+						sha256.update(b"\r");
+						f.push('\r' as u8);
+					}
+				}
+			} else if byte == '\n' as u8 {
+				if written + 3 > MAX_LUA_SIZE {
+					next_chunk!();
+				}
+				written += 3;
+
+				sha256.update(b"\n--");
+				f.push('\n' as u8);
+				f.push('-' as u8);
+				f.push('-' as u8);
+			} else {
+				if written + 1 > MAX_LUA_SIZE {
+					next_chunk!();
+				}
+				written += 1;
+
+				sha256.update(&[byte]);
+				f.push(byte);
+			}
+		}
+
+		if f.len() > 0 {
+			next_chunk!(@write);
+		}
+
+		Ok((hashes, chunk_n))
 	}
 
 	async fn generate_cache_manifest(&self, hashes_cl: Vec<[u8; 20]>, hashes_sh: Vec<[u8; 20]>) -> Result<(), PackingError> {
@@ -488,7 +517,11 @@ impl Packer {
 			} else {
 				let mut output = "{".to_string();
 				output.reserve(entry_files.len() * 255);
-				for entry in entry_files {
+				for entry in {
+					let mut entry_files: Vec<String> = entry_files.collect();
+					load_order::sort(&mut entry_files);
+					entry_files
+				} {
 					output.push('"');
 					output.push_str(&entry.replace('\\', "\\\\").replace('"', "\\\""));
 					output.push('"');
