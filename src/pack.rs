@@ -350,9 +350,18 @@ impl Packer {
 	}
 
 	async fn write_packed_chunks(&self, bytes: Vec<u8>, chunk_name: &'static str) -> Result<(Vec<[u8; 20]>, usize), PackingError> {
+		use tokio::io::AsyncWriteExt;
+
 		const NEWLINE_BYTE: u8 = '\n' as u8;
+		const QUOTE_BYTE: u8 = '"' as u8;
+		const BACKSLASH_BYTE: u8 = '\\' as u8;
+		const N_BYTE: u8 = 'n' as u8;
+		const E_LOWER_BYTE: u8 = 'e' as u8;
+		const E_UPPER_BYTE: u8 = 'E' as u8;
+		const X_LOWER_BYTE: u8 = 'x' as u8;
+		const X_UPPER_BYTE: u8 = 'X' as u8;
+		const DOT_BYTE: u8 = '.' as u8;
 		const DASH_BYTE: u8 = '-' as u8;
-		const CARRIAGE_BYTE: u8 = '\r' as u8;
 
 		if bytes.is_empty() {
 			return Ok((vec![], 0));
@@ -363,12 +372,94 @@ impl Packer {
 		let mut hashes = vec![];
 
 		let mut f = Vec::with_capacity(MAX_LUA_SIZE);
-		f.push('-' as u8);
-		f.push('-' as u8);
+		f.write_all(b"return\"").await.unwrap();
 
 		let mut chunk_n = 1;
-		let mut written = 2;
+		let mut written = b"return\"".len();
 
+		let mut sha256 = sha2::Sha256::new();
+		sha256.update(b"return\"");
+
+		macro_rules! next_chunk {
+			(@write) => {
+				f.push(QUOTE_BYTE);
+				std::fs::write(gluapack_dir.join(format!("gluapack.{}.{}.lua", chunk_n, chunk_name)), f)?;
+
+				hashes.push({
+					sha256.update(b"\"\0");
+					sha256.finalize()[0..20].try_into().unwrap()
+				});
+			};
+
+			() => {
+				if f.len() > 0 {
+					next_chunk!(@write);
+
+					chunk_n += 1;
+					written = b"return\"".len();
+
+					sha256 = sha2::Sha256::new();
+					sha256.update(b"return\"");
+
+					f = Vec::with_capacity(MAX_LUA_SIZE);
+					f.write_all(b"return\"").await.unwrap();
+				}
+			}
+		}
+
+		let mut iter = bytes.into_iter();
+		while let Some(byte) = iter.next() {
+			match (byte.is_ascii_whitespace() || byte.is_ascii_control() || byte.is_ascii_digit(), byte) {
+				(_, NEWLINE_BYTE) => {
+					if written + 2 > MAX_LUA_SIZE {
+						next_chunk!();
+					}
+					written += 2;
+
+					f.push(BACKSLASH_BYTE);
+					f.push(N_BYTE);
+
+					sha256.update(&[BACKSLASH_BYTE, N_BYTE]);
+				},
+				(true, _) | (_, 0) | (_, E_LOWER_BYTE) | (_, E_UPPER_BYTE) | (_, X_LOWER_BYTE) | (_, X_UPPER_BYTE) | (_, DOT_BYTE) | (_, DASH_BYTE) => {
+					let byte = byte.to_string();
+
+					if written + byte.len() + 1 > MAX_LUA_SIZE {
+						next_chunk!();
+					}
+					written += byte.len() + 1;
+
+					f.push(BACKSLASH_BYTE);
+					f.write_all(byte.as_bytes()).await.unwrap();
+
+					sha256.update(&[BACKSLASH_BYTE]);
+					sha256.update(byte.as_bytes());
+				},
+				(_, BACKSLASH_BYTE) | (_, QUOTE_BYTE) => {
+					if written + 2 > MAX_LUA_SIZE {
+						next_chunk!();
+					}
+					written += 2;
+
+					f.push(BACKSLASH_BYTE);
+					f.push(byte);
+
+					sha256.update(&[BACKSLASH_BYTE, byte]);
+				},
+				_ => {
+					if written + 1 > MAX_LUA_SIZE {
+						next_chunk!();
+					}
+					written += 1;
+
+					f.push(byte);
+
+					sha256.update(&[byte]);
+				}
+			}
+		}
+
+		/*
 		let mut sha256 = sha2::Sha256::new();
 		sha256.update(b"--");
 
@@ -393,15 +484,15 @@ impl Packer {
 					sha256.update(b"--");
 
 					f = Vec::with_capacity(MAX_LUA_SIZE);
-					f.push('-' as u8);
-					f.push('-' as u8);
+					f.push(DASH_BYTE);
+					f.push(DASH_BYTE);
 				}
 			}
 		}
 
 		let mut iter = bytes.into_iter();
 		while let Some(byte) = iter.next() {
-			if byte == '\r' as u8 {
+			if byte == CARRIAGE_BYTE {
 				match iter.next() {
 					Some(NEWLINE_BYTE) => {
 						if written + 4 > MAX_LUA_SIZE {
@@ -410,10 +501,10 @@ impl Packer {
 						written += 4;
 
 						sha256.update(b"\r\n--");
-						f.push('\r' as u8);
+						f.push(CARRIAGE_BYTE);
 						f.push('\n' as u8);
-						f.push('-' as u8);
-						f.push('-' as u8);
+						f.push(DASH_BYTE);
+						f.push(DASH_BYTE);
 					},
 					Some(next_byte) => {
 						if written + 2 > MAX_LUA_SIZE {
@@ -423,7 +514,7 @@ impl Packer {
 
 						sha256.update(b"\r");
 						sha256.update(&[next_byte]);
-						f.push('\r' as u8);
+						f.push(CARRIAGE_BYTE);
 						f.push(next_byte);
 					},
 					None => {
@@ -433,7 +524,7 @@ impl Packer {
 						written += 1;
 
 						sha256.update(b"\r");
-						f.push('\r' as u8);
+						f.push(CARRIAGE_BYTE);
 					}
 				}
 			} else if byte == '\n' as u8 {
@@ -444,8 +535,8 @@ impl Packer {
 
 				sha256.update(b"\n--");
 				f.push('\n' as u8);
-				f.push('-' as u8);
-				f.push('-' as u8);
+				f.push(DASH_BYTE);
+				f.push(DASH_BYTE);
 			} else {
 				if written + 1 > MAX_LUA_SIZE {
 					next_chunk!();
@@ -456,6 +547,7 @@ impl Packer {
 				f.push(byte);
 			}
 		}
+		*/
 
 		if f.len() > 0 {
 			next_chunk!(@write);
@@ -592,6 +684,20 @@ impl Packer {
 			Packer::pack_lua_files(sh, true)
 		);
 
+		quietln!(self.quiet, "Compressing...");
+
+		async fn compress(data: Vec<u8>) -> Result<Vec<u8>, gmod_lzma::SZ> {
+			if data.is_empty() {
+				Ok(data)
+			} else {
+				tokio::task::spawn_blocking(move || gmod_lzma::compress(&data, 9)).await.expect("Failed to join thread")
+			}
+		}
+		let (cl, sh) = future::try_join(
+			compress(cl),
+			compress(sh)
+		).await.map_err(|_| error!(PackingError::CompressionError))?;
+
 		self.unique_id = Some(self.config.unique_id.as_ref().map(|x| x.to_owned()).unwrap_or_else(|| {
 			const HASH_SUBHEX_LENGTH: usize = 16;
 
@@ -600,6 +706,7 @@ impl Packer {
 			let mut sha256 = sha2::Sha256::new();
 			sha256.update(&sv);
 			sha256.update(&sh);
+			sha256.update(&cl);
 			format!("{:x}", sha256.finalize())[0..HASH_SUBHEX_LENGTH].to_string()
 		}));
 
@@ -665,6 +772,12 @@ pub enum PackingError {
 
 	#[error("No Lua files were found in your addon using this inclusion configuration")]
 	NoLuaFiles {
+		#[cfg(all(debug_assertions, feature = "nightly"))]
+		backtrace: std::backtrace::Backtrace
+	},
+
+	#[error("Compression error")]
+	CompressionError {
 		#[cfg(all(debug_assertions, feature = "nightly"))]
 		backtrace: std::backtrace::Backtrace
 	},

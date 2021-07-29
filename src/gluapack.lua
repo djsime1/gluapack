@@ -90,29 +90,39 @@ do
 	file.CreateDir("gluapack/vfs")
 end
 
-local clientsideFiles = {}
-local GLUAPACK_CURRENT_CHUNK
-local GLUAPACK_IS_CHUNK_NETWORKED = CLIENT and true or nil
 local TERMINATOR_HACK = string.byte("|")
-local function processChunk()
-	while not GLUAPACK_CURRENT_CHUNK:EndOfFile() do
-		local terminator = GLUAPACK_IS_CHUNK_NETWORKED and TERMINATOR_HACK or 0
+local clientsideFiles = {}
+local chunk
+local chunkNetworked = CLIENT and true or nil
+local function processChunk(path)
+	if path then
+		chunk = file_Open(path, "rb", "DATA")
+	else
+		if not file_Exists("gluapack-temp.dat", "DATA") then
+			return
+		end
+		file.Write("gluapack-temp.dat", util.Decompress(file_Read("gluapack-temp.dat", "DATA")))
+		chunk = file_Open("gluapack-temp.dat", "rb", "DATA")
+	end
+
+	while not chunk:EndOfFile() do
+		local terminator = chunkNetworked and TERMINATOR_HACK or 0
 
 		-- Read path
 		local path = {}
 		while true do
-			local byte = GLUAPACK_CURRENT_CHUNK:ReadByte()
+			local byte = chunk:ReadByte()
 			if byte == terminator then
 				break
 			else
 				path[#path + 1] = string.char(byte)
 			end
-			if GLUAPACK_CURRENT_CHUNK:EndOfFile() then
-				coroutine.yield()
+			if chunk:EndOfFile() then
+				goto eof
 			end
 		end
 
-		if GLUAPACK_IS_CHUNK_NETWORKED then
+		if chunkNetworked then
 			path = table.concat(path)
 			clientsideFiles[path] = true
 			path = ("gluapack/vfs/%s.txt"):format(path)
@@ -123,119 +133,44 @@ local function processChunk()
 		file.CreateDir((path:gsub("/[^/]-$", "")))
 
 		local remaining
-		if GLUAPACK_IS_CHUNK_NETWORKED then
+		if chunkNetworked then
 			remaining = {}
 			while true do
-				local byte = GLUAPACK_CURRENT_CHUNK:ReadByte()
+				local byte = chunk:ReadByte()
 				if byte == TERMINATOR_HACK then
 					break
 				else
 					remaining[#remaining + 1] = string.char(byte)
 				end
-				if GLUAPACK_CURRENT_CHUNK:EndOfFile() then
-					coroutine.yield()
+				if chunk:EndOfFile() then
+					goto eof
 				end
 			end
 			remaining = tonumber(table.concat(remaining), 16)
 		else
-			remaining = GLUAPACK_CURRENT_CHUNK:ReadULong()
+			remaining = chunk:ReadULong()
 		end
 		while true do
-			local readBytes = math.min(remaining, GLUAPACK_CURRENT_CHUNK:Size() - GLUAPACK_CURRENT_CHUNK:Tell())
-			file.Append(path, GLUAPACK_CURRENT_CHUNK:Read(readBytes))
+			local readBytes = math.min(remaining, chunk:Size() - chunk:Tell())
+			file.Append(path, chunk:Read(readBytes))
 			remaining = remaining - readBytes
 
-			if GLUAPACK_CURRENT_CHUNK:EndOfFile() then
-				coroutine.yield()
+			if chunk:EndOfFile() then
+				goto eof
 			elseif remaining <= 0 then
 				assert(remaining == 0)
 				break
 			end
 		end
 	end
-end
 
-local co, unpackChunk
-if CLIENT then
-	-- On the client, we read the chunks from the Lua cache.
-	-- To get Gmod to add the files to the Lua cache, we need to include/compile the files.
-	-- To include/compile the Lua files without creating an error, the files are commented on every new line.
-	-- We store their Lua cache file names (SHA1 truncated to 40 bytes) in a manifest file.
-	function unpackChunk(path, _, clientCacheManifest)
-		local index, realm = path:match("gluapack%.(%d+)%.(.-)%.lua$")
-		local cachePath = ("cache/lua/%s.lua"):format(clientCacheManifest[realm][tonumber(index)])
-
-		CompileFile(path) -- This triggers the game to write to cache/lua/<clientCacheManifest[path]>.lua
-		assert(file_Exists(cachePath, "GAME"), ("Cached packed file (%s) doesn't exist in %s"):format(path, cachePath))
-
-		local f = file_Open(cachePath, "rb", "GAME")
-
-		-- Skip 32 bytes (SHA256 header)
-		f:Skip(32)
-
-		-- Read to EOF
-		local chunk = f:Read(f:Size() - 32)
-		f:Close()
-
-		-- Decompress
-		chunk = util.Decompress(chunk)
-
-		-- Strip comments
-		chunk = chunk:sub(3, #chunk - 1):gsub("\n%-%-", "\n")
-
-		-- Write to our temp file "buffer"
-		file.Write("gluapack-temp.dat", chunk)
-		chunk = nil
-
-		GLUAPACK_CURRENT_CHUNK = file_Open("gluapack-temp.dat", "rb", "DATA")
-
-		-- Continue as normal
-		coroutine.resume(co)
-
-		GLUAPACK_CURRENT_CHUNK:Close()
+	::eof::
+	chunk:Close()
+	chunk = nil
+	if not path then
 		file.Delete("gluapack-temp.dat")
 	end
-else
-	function unpackChunk(path, isNetworked)
-		GLUAPACK_IS_CHUNK_NETWORKED = isNetworked
-		if isNetworked then
-			-- Is this a shared file? It will have comments...
-			local chunk = file_Read(path, "LUA")
-
-			-- Strip comments
-			chunk = chunk:sub(3):gsub("\n%-%-", "\n")
-
-			-- Write to our temp file "buffer"
-			file.Write("gluapack-temp.dat", chunk)
-			chunk = nil
-
-			GLUAPACK_CURRENT_CHUNK = file_Open("gluapack-temp.dat", "rb", "DATA")
-
-			-- Continue as normal
-			coroutine.resume(co)
-
-			GLUAPACK_CURRENT_CHUNK:Close()
-			file.Delete("gluapack-temp.dat")
-		else
-			-- Otherwise, just read as normal
-			GLUAPACK_CURRENT_CHUNK = file_Open(path, "rb", "LUA")
-			coroutine.resume(co)
-			GLUAPACK_CURRENT_CHUNK:Close()
-		end
-	end
 end
-
-local function resetUnpacker()
-	co = coroutine.create(processChunk)
-	if GLUAPACK_CURRENT_CHUNK then
-		GLUAPACK_CURRENT_CHUNK:Close()
-		GLUAPACK_CURRENT_CHUNK = nil
-	end
-	if SERVER then
-		GLUAPACK_IS_CHUNK_NETWORKED = nil
-	end
-end
-resetUnpacker()
 
 local findSortedChunks do
 	local function extract(path)
@@ -252,40 +187,29 @@ local findSortedChunks do
 	end
 end
 local function gluaunpack(path)
-	local manifestPath, cacheManifest = path .. "manifest.lua"
-	if file_Exists(manifestPath, "LUA") then
-		if CLIENT then
-			cacheManifest = include(manifestPath)
-		else
-			AddCSLuaFile(manifestPath)
-		end
-	end
-
 	for _, f in ipairs(findSortedChunks(path .. "*.sh.lua")) do
 		local path = path .. f
 		if SERVER then
 			AddCSLuaFile(path)
 		end
-		unpackChunk(path, true, cacheManifest)
+		file.Append("gluapack-temp.dat", include(path))
 	end
-
-	resetUnpacker()
+	processChunk()
 
 	for _, f in ipairs(findSortedChunks(path .. "*.cl.lua")) do
 		local path = path .. f
 		if SERVER then
 			AddCSLuaFile(path)
+		else
+			file.Append("gluapack-temp.dat", include(path))
 		end
-		unpackChunk(path, true, cacheManifest)
 	end
-
-	resetUnpacker()
-
-	if SERVER then
+	if CLIENT then
+		processChunk()
+	else
 		local svPath = path .. "gluapack.sv.lua"
 		if file_Exists(svPath, "LUA") then
-			unpackChunk(svPath)
-			resetUnpacker()
+			processChunk(svPath)
 		end
 	end
 end
