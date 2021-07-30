@@ -1,7 +1,7 @@
 // The order of operations should be: sv cl sh
 
-use crate::{MAX_LUA_SIZE, MEM_PREALLOCATE_MAX, TERMINATOR_HACK, config::{Config, GlobPattern}, load_order, util};
-use std::{collections::HashSet, convert::TryInto, path::PathBuf, time::Duration};
+use crate::{MAX_LUA_SIZE, MEM_PREALLOCATE_MAX, TERMINATOR_HACK, config::{Config, GlobPattern}, loadorder, util};
+use std::{collections::HashSet, path::PathBuf, time::Duration};
 use futures_util::{FutureExt, future};
 use sha2::Digest;
 
@@ -21,6 +21,43 @@ impl PartialEq for LuaFile {
 	}
 }
 impl Eq for LuaFile {}
+impl PartialOrd for LuaFile {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(loadorder::cmp(&self.path, &other.path))
+    }
+}
+impl Ord for LuaFile {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        loadorder::cmp(&self.path, &other.path)
+    }
+}
+
+pub struct PackingStatistics {
+	pub(crate) total_unpacked_files: usize,
+	pub(crate) total_unpacked_size: usize,
+	pub(crate) total_packed_files: usize,
+	pub(crate) total_packed_size: usize,
+	pub(crate) elapsed: Duration,
+}
+impl PackingStatistics {
+	pub fn files(&self) -> String {
+		let pct_change = (((self.total_unpacked_files as f64) - (self.total_packed_files as f64)) / (self.total_unpacked_files as f64)) * 100.;
+		let sign = if pct_change == 0. { "" } else if pct_change > 0. { "-" } else { "+" };
+
+		format!("{} files -> {} file(s) ({}{:.2}%)", self.total_unpacked_files, self.total_packed_files, sign, pct_change.abs())
+	}
+
+	pub fn size(&self) -> String {
+		let pct_change = (((self.total_unpacked_size as f64) - (self.total_packed_size as f64)) / (self.total_unpacked_size as f64)) * 100.;
+		let sign = if pct_change == 0. { "" } else if pct_change > 0. { "-" } else { "+" };
+
+		format!("{} -> {} ({}{:.2}%)", util::file_size(self.total_unpacked_size), util::file_size(self.total_packed_size), sign, pct_change.abs())
+	}
+
+	pub fn elapsed(&self) -> String {
+		format!("{:?}", self.elapsed)
+	}
+}
 
 pub(crate) struct Packer {
 	pub(crate) out_dir: PathBuf,
@@ -31,7 +68,7 @@ pub(crate) struct Packer {
 	pub(crate) no_copy: bool
 }
 impl Packer {
-	pub(crate) async fn pack(mut dir: PathBuf, out_dir: Option<PathBuf>, no_copy: bool, quiet: bool, config: Option<Config>) -> Result<(usize, usize, Duration), PackingError> {
+	pub(crate) async fn pack(mut dir: PathBuf, out_dir: Option<PathBuf>, no_copy: bool, quiet: bool, config: Option<Config>) -> Result<PackingStatistics, PackingError> {
 		let mut config = match config {
 			Some(config) => config,
 			None => {
@@ -116,7 +153,7 @@ impl Packer {
 			packer.delete_old_gluapack_files().await?;
 		}
 
-		let total_packed_files = packer.process(
+		let (total_packed_files, total_packed_size, total_unpacked_size) = packer.process(
 			sv.into_iter(),
 			sv_entry_files.into_iter(),
 
@@ -127,7 +164,13 @@ impl Packer {
 			sh_entry_files.into_iter()
 		).await?;
 
-		Ok((total_unpacked_files, total_packed_files + 3, started.elapsed()))
+		Ok(PackingStatistics {
+			total_unpacked_files,
+			total_unpacked_size,
+			total_packed_files: total_packed_files + 1,
+			total_packed_size,
+			elapsed: started.elapsed()
+		})
 	}
 
 	fn unique_id(&self) -> &String {
@@ -135,8 +178,8 @@ impl Packer {
 		self.unique_id.as_ref().unwrap()
 	}
 
-	async fn collect_lua_files(&self, dir: &PathBuf, patterns: &[GlobPattern], entries: &[GlobPattern]) -> Result<(HashSet<LuaFile>, Vec<String>), PackingError> {
-		let mut lua_files = HashSet::new();
+	async fn collect_lua_files(&self, dir: &PathBuf, patterns: &[GlobPattern], entries: &[GlobPattern]) -> Result<(Vec<LuaFile>, Vec<String>), PackingError> {
+		let mut lua_files = vec![];
 		let mut entry_files = vec![];
 		let mut abort_handles = vec![];
 
@@ -157,10 +200,10 @@ impl Packer {
 				let path = fs_path.strip_prefix(&dir).unwrap().to_string_lossy().into_owned().replace('\\', "/");
 				let tx = tx.clone();
 
-				if !lua_files.insert(LuaFile {
+				if lua_files.binary_search(&LuaFile {
 					path: path.to_owned(),
 					contents: vec![]
-				}) {
+				}).is_ok() {
 					// We've already included this file, skip it.
 					continue;
 				}
@@ -196,10 +239,18 @@ impl Packer {
 				}
 			}
 
-			lua_files.replace(LuaFile {
+			let lua_file = LuaFile {
 				path,
 				contents
-			});
+			};
+
+			match lua_files.binary_search(&lua_file) {
+				Err(pos) => lua_files.insert(pos, lua_file),
+				Ok(_) => {
+					// We've already included this file, skip it.
+					continue
+				},
+			}
 		}
 
 		Ok((lua_files, entry_files))
@@ -311,11 +362,13 @@ impl Packer {
 		Ok(())
 	}
 
-	async fn pack_lua_files<L>(lua_files: L, is_sent_to_client: bool) -> (Vec<String>, Vec<u8>)
+	async fn pack_lua_files<L>(lua_files: L, is_sent_to_client: bool) -> (Vec<String>, Vec<u8>, usize)
 	where
 		L: Iterator<Item = LuaFile> + ExactSizeIterator
 	{
 		use tokio::io::AsyncWriteExt;
+
+		let mut total_size = 0;
 
 		let mut file_list = Vec::with_capacity(lua_files.len());
 
@@ -344,12 +397,14 @@ impl Packer {
 			superchunk.write_all(&mut lua_file.contents).await.expect("Failed to write Lua file into superchunk");
 
 			file_list.push(lua_file.path);
+
+			total_size += lua_file.contents.len();
 		}
 
-		(file_list, superchunk)
+		(file_list, superchunk, total_size)
 	}
 
-	async fn write_packed_chunks(&self, bytes: Vec<u8>, chunk_name: &'static str) -> Result<(Vec<[u8; 20]>, usize), PackingError> {
+	async fn write_packed_chunks(&self, bytes: Vec<u8>, chunk_name: &'static str) -> Result<(usize, usize), PackingError> {
 		use tokio::io::AsyncWriteExt;
 
 		const NEWLINE_BYTE: u8 = '\n' as u8;
@@ -364,31 +419,43 @@ impl Packer {
 		const DASH_BYTE: u8 = '-' as u8;
 
 		if bytes.is_empty() {
-			return Ok((vec![], 0));
+			return Ok((0, 0));
 		}
 
 		let gluapack_dir = self.out_dir.join(format!("gluapack/{}", self.unique_id()));
-
-		let mut hashes = vec![];
 
 		let mut f = Vec::with_capacity(MAX_LUA_SIZE);
 		f.write_all(b"return\"").await.unwrap();
 
 		let mut chunk_n = 1;
 		let mut written = b"return\"".len();
+		let mut total_written = written;
 
-		let mut sha256 = sha2::Sha256::new();
-		sha256.update(b"return\"");
+		macro_rules! written {
+			(++$n:literal) => {
+				written += $n;
+				total_written += $n;
+			};
+			($n:literal) => {
+				written = $n;
+				total_written += $n;
+			};
+			(++$n:expr) => {
+				let n = $n;
+				written += n;
+				total_written += n;
+			};
+			($n:expr) => {
+				let n = $n;
+				written = n;
+				total_written += n;
+			}
+		}
 
 		macro_rules! next_chunk {
 			(@write) => {
 				f.push(QUOTE_BYTE);
 				std::fs::write(gluapack_dir.join(format!("gluapack.{}.{}.lua", chunk_n, chunk_name)), f)?;
-
-				hashes.push({
-					sha256.update(b"\"\0");
-					sha256.finalize()[0..20].try_into().unwrap()
-				});
 			};
 
 			() => {
@@ -396,10 +463,7 @@ impl Packer {
 					next_chunk!(@write);
 
 					chunk_n += 1;
-					written = b"return\"".len();
-
-					sha256 = sha2::Sha256::new();
-					sha256.update(b"return\"");
+					written!(b"return\"".len());
 
 					f = Vec::with_capacity(MAX_LUA_SIZE);
 					f.write_all(b"return\"").await.unwrap();
@@ -414,12 +478,10 @@ impl Packer {
 					if written + 2 > MAX_LUA_SIZE {
 						next_chunk!();
 					}
-					written += 2;
+					written!(++2);
 
 					f.push(BACKSLASH_BYTE);
 					f.push(N_BYTE);
-
-					sha256.update(&[BACKSLASH_BYTE, N_BYTE]);
 				},
 				(true, _) | (_, 0) | (_, E_LOWER_BYTE) | (_, E_UPPER_BYTE) | (_, X_LOWER_BYTE) | (_, X_UPPER_BYTE) | (_, DOT_BYTE) | (_, DASH_BYTE) => {
 					let byte = byte.to_string();
@@ -427,174 +489,36 @@ impl Packer {
 					if written + byte.len() + 1 > MAX_LUA_SIZE {
 						next_chunk!();
 					}
-					written += byte.len() + 1;
+					written!(++byte.len() + 1);
 
 					f.push(BACKSLASH_BYTE);
 					f.write_all(byte.as_bytes()).await.unwrap();
-
-					sha256.update(&[BACKSLASH_BYTE]);
-					sha256.update(byte.as_bytes());
 				},
 				(_, BACKSLASH_BYTE) | (_, QUOTE_BYTE) => {
 					if written + 2 > MAX_LUA_SIZE {
 						next_chunk!();
 					}
-					written += 2;
+					written!(++2);
 
 					f.push(BACKSLASH_BYTE);
 					f.push(byte);
-
-					sha256.update(&[BACKSLASH_BYTE, byte]);
 				},
 				_ => {
 					if written + 1 > MAX_LUA_SIZE {
 						next_chunk!();
 					}
-					written += 1;
+					written!(++1);
 
 					f.push(byte);
-
-					sha256.update(&[byte]);
 				}
 			}
 		}
-
-		/*
-		let mut sha256 = sha2::Sha256::new();
-		sha256.update(b"--");
-
-		macro_rules! next_chunk {
-			(@write) => {
-				std::fs::write(gluapack_dir.join(format!("gluapack.{}.{}.lua", chunk_n, chunk_name)), f)?;
-
-				hashes.push({
-					sha256.update(&[0u8]);
-					sha256.finalize()[0..20].try_into().unwrap()
-				});
-			};
-
-			() => {
-				if f.len() > 0 {
-					next_chunk!(@write);
-
-					chunk_n += 1;
-					written = 2;
-
-					sha256 = sha2::Sha256::new();
-					sha256.update(b"--");
-
-					f = Vec::with_capacity(MAX_LUA_SIZE);
-					f.push(DASH_BYTE);
-					f.push(DASH_BYTE);
-				}
-			}
-		}
-
-		let mut iter = bytes.into_iter();
-		while let Some(byte) = iter.next() {
-			if byte == CARRIAGE_BYTE {
-				match iter.next() {
-					Some(NEWLINE_BYTE) => {
-						if written + 4 > MAX_LUA_SIZE {
-							next_chunk!();
-						}
-						written += 4;
-
-						sha256.update(b"\r\n--");
-						f.push(CARRIAGE_BYTE);
-						f.push('\n' as u8);
-						f.push(DASH_BYTE);
-						f.push(DASH_BYTE);
-					},
-					Some(next_byte) => {
-						if written + 2 > MAX_LUA_SIZE {
-							next_chunk!();
-						}
-						written += 2;
-
-						sha256.update(b"\r");
-						sha256.update(&[next_byte]);
-						f.push(CARRIAGE_BYTE);
-						f.push(next_byte);
-					},
-					None => {
-						if written + 1 > MAX_LUA_SIZE {
-							next_chunk!();
-						}
-						written += 1;
-
-						sha256.update(b"\r");
-						f.push(CARRIAGE_BYTE);
-					}
-				}
-			} else if byte == '\n' as u8 {
-				if written + 3 > MAX_LUA_SIZE {
-					next_chunk!();
-				}
-				written += 3;
-
-				sha256.update(b"\n--");
-				f.push('\n' as u8);
-				f.push(DASH_BYTE);
-				f.push(DASH_BYTE);
-			} else {
-				if written + 1 > MAX_LUA_SIZE {
-					next_chunk!();
-				}
-				written += 1;
-
-				sha256.update(&[byte]);
-				f.push(byte);
-			}
-		}
-		*/
 
 		if f.len() > 0 {
 			next_chunk!(@write);
 		}
 
-		Ok((hashes, chunk_n))
-	}
-
-	async fn generate_cache_manifest(&self, hashes_cl: Vec<[u8; 20]>, hashes_sh: Vec<[u8; 20]>) -> Result<(), PackingError> {
-		let mut cache_manifest = String::new();
-		cache_manifest.push_str("return{");
-
-		if !hashes_sh.is_empty() {
-			cache_manifest.push_str("sh={");
-			for hash in hashes_sh {
-				cache_manifest.push('"');
-				cache_manifest.reserve(40);
-				for byte in hash.iter() {
-					cache_manifest.push_str(&format!("{:02x}", byte));
-				}
-				cache_manifest.push('"');
-				cache_manifest.push(',');
-			}
-			cache_manifest.pop();
-			cache_manifest.push('}');
-			cache_manifest.push(',');
-		}
-
-		if !hashes_cl.is_empty() {
-			cache_manifest.push_str("cl={");
-			for hash in hashes_cl {
-				cache_manifest.push('"');
-				cache_manifest.reserve(40);
-				for byte in hash.iter() {
-					cache_manifest.push_str(&format!("{:02x}", byte));
-				}
-				cache_manifest.push('"');
-				cache_manifest.push(',');
-			}
-			cache_manifest.pop();
-			cache_manifest.push('}');
-		}
-
-		cache_manifest.push('}');
-		tokio::fs::write(self.out_dir.join(format!("gluapack/{}/manifest.lua", self.unique_id())), cache_manifest).await?;
-
-		Ok(())
+		Ok((chunk_n, total_written))
 	}
 
 	async fn write_loader<S>(&self, sv_entry_files: S, cl_entry_files: S, sh_entry_files: S) -> Result<(), PackingError>
@@ -611,7 +535,7 @@ impl Packer {
 				output.reserve(entry_files.len() * 255);
 				for entry in {
 					let mut entry_files: Vec<String> = entry_files.collect();
-					load_order::sort(&mut entry_files);
+					loadorder::sort(&mut entry_files);
 					entry_files
 				} {
 					output.push('"');
@@ -671,18 +595,20 @@ impl Packer {
 		Ok(())
 	}
 
-	pub(crate) async fn process<L, S>(mut self, sv: L, sv_entry_files: S, cl: L, cl_entry_files: S, sh: L, sh_entry_files: S) -> Result<usize, PackingError>
+	pub(crate) async fn process<L, S>(mut self, sv: L, sv_entry_files: S, cl: L, cl_entry_files: S, sh: L, sh_entry_files: S) -> Result<(usize, usize, usize), PackingError>
 	where
 		L: Iterator<Item = LuaFile> + ExactSizeIterator + Send,
 		S: Iterator<Item = String> + ExactSizeIterator + Send
 	{
 		quietln!(self.quiet, "Packing...");
 
-		let ((sv_paths, sv), (cl_paths, cl), (sh_paths, sh)) = tokio::join!(
+		let ((sv_paths, sv, sv_len), (cl_paths, cl, cl_len), (sh_paths, sh, sh_len)) = tokio::join!(
 			Packer::pack_lua_files(sv, false),
 			Packer::pack_lua_files(cl, true),
 			Packer::pack_lua_files(sh, true)
 		);
+
+		let total_unpacked_size = sv_len + cl_len + sh_len;
 
 		quietln!(self.quiet, "Compressing...");
 
@@ -714,25 +640,20 @@ impl Packer {
 
 		if !sv.is_empty() {
 			quietln!(self.quiet, "Writing packed serverside files...");
-			tokio::fs::write(self.out_dir.join(&format!("gluapack/{}/gluapack.sv.lua", self.unique_id())), sv).await?;
+			tokio::fs::write(self.out_dir.join(&format!("gluapack/{}/gluapack.sv.lua", self.unique_id())), &sv).await?;
 		}
 
-		let total_packed_files = if !cl.is_empty() || !sh.is_empty() {
+		let (mut total_packed_files, mut total_packed_size) = if !cl.is_empty() || !sh.is_empty() {
 			quietln!(self.quiet, "Chunking...");
 
-			let ((hashes_cl, chunk_n_cl), (hashes_sh, chunk_n_sh)) = tokio::try_join!(
+			let ((chunk_n_cl, chunk_size_cl), (chunk_n_sh, chunk_size_sh)) = tokio::try_join!(
 				self.write_packed_chunks(cl, "cl"),
 				self.write_packed_chunks(sh, "sh"),
 			)?;
 
-			if !hashes_cl.is_empty() || !hashes_sh.is_empty() {
-				quietln!(self.quiet, "Generating clientside Lua cache manifest...");
-				self.generate_cache_manifest(hashes_cl, hashes_sh).await?;
-			}
-
-			chunk_n_cl + chunk_n_sh
+			(chunk_n_cl + chunk_n_sh, chunk_size_cl + chunk_size_sh)
 		} else {
-			0
+			(0, 0)
 		};
 
 		quietln!(self.quiet, "Injecting loader...");
@@ -743,7 +664,12 @@ impl Packer {
 			self.delete_unpacked(sv_paths, cl_paths, sh_paths).await?;
 		}
 
-		Ok(total_packed_files)
+		if !sv.is_empty() {
+			total_packed_files += 1;
+			total_packed_size += sv.len();
+		}
+
+		Ok((total_packed_files, total_packed_size, total_unpacked_size))
 	}
 }
 

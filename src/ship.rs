@@ -1,6 +1,6 @@
 use std::{collections::HashSet, path::PathBuf};
 
-use crate::{MAX_LUA_SIZE, config::Config, pack::{LuaFile, Packer, PackingError}};
+use crate::{MAX_LUA_SIZE, config::Config, pack::{LuaFile, Packer, PackingError, PackingStatistics}};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Realm {
@@ -39,13 +39,13 @@ impl ShipmentFile {
 /// serverside, clientside and shared files and entry files.
 #[derive(Default, Debug, Clone)]
 pub struct ShipmentBuilder {
-	sv: HashSet<LuaFile>,
+	sv: Vec<LuaFile>,
 	sv_entry_files: HashSet<String>,
 
-	sh: HashSet<LuaFile>,
+	sh: Vec<LuaFile>,
 	sh_entry_files: HashSet<String>,
 
-	cl: HashSet<LuaFile>,
+	cl: Vec<LuaFile>,
 	cl_entry_files: HashSet<String>,
 }
 impl ShipmentBuilder {
@@ -60,12 +60,29 @@ impl ShipmentBuilder {
 			entry_files.insert(file.path.clone());
 		}
 
-		files.insert(LuaFile {
+		let lua_file = LuaFile {
 			path: file.path,
 			contents: file.contents
-		});
+		};
+
+		if let Err(pos) = files.binary_search(&lua_file) {
+			files.insert(pos, lua_file);
+		}
 
 		self
+	}
+
+	pub fn exists(&self, realm: Realm, path: String) -> bool {
+		let files = match realm {
+			Realm::Serverside => &self.sv,
+			Realm::Clientside => &self.cl,
+			Realm::Shared => &self.sh,
+		};
+
+		files.binary_search(&LuaFile {
+			path,
+			contents: vec![]
+		}).is_ok()
 	}
 
 	pub fn reserve(&mut self, realm: Realm, entry: bool, additional: usize) -> &mut Self {
@@ -104,7 +121,7 @@ impl ShipmentBuilder {
 	}
 
 	/// Consumes the builder and packs the shipment.
-	pub async fn ship(self, out_dir: PathBuf, unique_id: Option<String>) -> Result<(usize, usize), PackingError> {
+	pub async fn ship(self, out_dir: PathBuf, unique_id: Option<String>) -> Result<PackingStatistics, PackingError> {
 		let packer = Packer {
 			out_dir,
 			config: {
@@ -120,7 +137,9 @@ impl ShipmentBuilder {
 
 		let total_unpacked_files = self.sv.len() + self.cl.len() + self.sh.len();
 
-		let total_packed_files = packer.process(
+		let started = std::time::Instant::now();
+
+		let (total_packed_files, total_packed_size, total_unpacked_size) = packer.process(
 			self.sv.into_iter(),
 			self.sv_entry_files.into_iter(),
 
@@ -131,6 +150,12 @@ impl ShipmentBuilder {
 			self.sh_entry_files.into_iter()
 		).await?;
 
-		Ok((total_unpacked_files, total_packed_files + 3))
+		Ok(PackingStatistics {
+			total_unpacked_files,
+			total_unpacked_size,
+			total_packed_files: total_packed_files + 1,
+			total_packed_size,
+			elapsed: started.elapsed()
+		})
 	}
 }

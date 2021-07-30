@@ -9,7 +9,7 @@ mod util;
 mod consts;
 pub(crate) use consts::*;
 
-mod load_order;
+mod loadorder;
 
 mod config;
 mod pack;
@@ -148,12 +148,12 @@ async fn main() {
 
 			match (quiet, Packer::pack(path, out_dir, no_copy, quiet, None).await) {
 				(true, Ok(_)) => {},
-				(false, Ok((unpacked_files, packed_files, elapsed))) => {
+				(false, Ok(stats)) => {
 					println!();
-					let pct_change = (((unpacked_files as f64) - (packed_files as f64)) / (unpacked_files as f64)) * 100.;
-					let sign = if pct_change == 0. { "" } else if pct_change > 0. { "-" } else { "+" };
-					println!("Successfully PACKED {} file(s) -> {} files ({}{:.2}%)", unpacked_files, packed_files, sign, pct_change.abs());
-					println!("Took {:?}", elapsed);
+					println!("PACKED successfully!");
+					println!("{}", stats.files());
+					println!("{}", stats.size());
+					println!("Took {}", stats.elapsed());
 				},
 				(_, Err(error)) => {
 					if !quiet {
@@ -176,12 +176,12 @@ async fn main() {
 
 			match (quiet, Unpacker::unpack(path, out_dir, no_copy, quiet).await) {
 				(true, Ok(_)) => {},
-				(false, Ok((packed_files, unpacked_files, elapsed))) => {
+				(false, Ok(stats)) => {
 					println!();
-					let pct_change = (((unpacked_files as f64) - (packed_files as f64)) / (unpacked_files as f64)) * 100.;
-					let sign = if pct_change == 0. { "" } else if pct_change > 0. { "-" } else { "+" };
-					println!("Successfully UNPACKED {} files -> {} file(s) ({}{:.2}%)", unpacked_files, packed_files, sign, pct_change.abs());
-					println!("Took {:?}", elapsed);
+					println!("UNPACKED successfully!");
+					println!("{}", stats.files());
+					println!("{}", stats.size());
+					println!("Took {}", stats.elapsed());
 				},
 				(_, Err(error)) => {
 					if !quiet {

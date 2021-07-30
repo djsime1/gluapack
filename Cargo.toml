@@ -28,7 +28,8 @@ sha2 = "0.9.5"
 clap = "2.33.3"
 lazy_static = "1.4.0"
 dunce = "1.0.2"
-gmod-lzma = "*"
+#gmod-lzma = "*"
+gmod-lzma = { path = "../gmod-lzma" }
 
 [features]
 nightly = []

@@ -1,4 +1,9 @@
+// FIXME for new format
+// TODO test if UnpackingStatistics is correct
+
 use std::{collections::HashSet, ffi::OsString, io::{BufRead, Seek}, path::{Path, PathBuf}, time::Duration};
+
+use futures_util::future;
 
 use crate::{config::GlobPattern, MAX_LUA_SIZE, TERMINATOR_HACK, MEM_PREALLOCATE_MAX, util};
 
@@ -10,12 +15,39 @@ lazy_static! {
 	static ref GLUAPACK_DIR: PathBuf = PathBuf::from("gluapack");
 }
 
+pub struct UnpackingStatistics {
+	total_unpacked_files: usize,
+	total_unpacked_size: usize,
+	total_packed_files: usize,
+	total_packed_size: usize,
+	elapsed: Duration,
+}
+impl UnpackingStatistics {
+	pub fn files(&self) -> String {
+		let pct_change = (((self.total_unpacked_files as f64) - (self.total_packed_files as f64)) / (self.total_unpacked_files as f64)) * 100.;
+		let sign = if pct_change == 0. { "" } else if pct_change > 0. { "-" } else { "+" };
+
+		format!("{} files -> {} file(s) ({}{:.2}%)", self.total_unpacked_files, self.total_packed_files, sign, pct_change.abs())
+	}
+
+	pub fn size(&self) -> String {
+		let pct_change = (((self.total_unpacked_size as f64) - (self.total_packed_size as f64)) / (self.total_unpacked_size as f64)) * 100.;
+		let sign = if pct_change == 0. { "" } else if pct_change > 0. { "-" } else { "+" };
+
+		format!("{:.2} -> {:.2} ({}{:.2}%)", util::file_size(self.total_unpacked_size), util::file_size(self.total_packed_size), sign, pct_change.abs())
+	}
+
+	pub fn elapsed(&self) -> String {
+		format!("{:?}", self.elapsed)
+	}
+}
+
 pub(crate) struct Unpacker {
 	pub(crate) dir: PathBuf,
 	pub(crate) out_dir: PathBuf
 }
 impl Unpacker {
-	pub(crate) async fn unpack(dir: PathBuf, out_dir: Option<PathBuf>, no_copy: bool, quiet: bool) -> Result<(usize, usize, Duration), UnpackingError> {
+	pub(crate) async fn unpack(dir: PathBuf, out_dir: Option<PathBuf>, no_copy: bool, quiet: bool) -> Result<UnpackingStatistics, UnpackingError> {
 		quietln!(quiet, "Addon Path: {}", util::canonicalize(&dir).display());
 
 		let out_dir = if let Some(out_dir) = out_dir {
@@ -65,24 +97,40 @@ impl Unpacker {
 		unpacker.out_dir.push("lua");
 		unpacker.dir.push("lua");
 
-		let mut total_packed_files = cl_chunk_files.len() + sh_chunk_files.len();
+		let total_packed_files = cl_chunk_files.len() + sh_chunk_files.len() + if sv_packed_file.is_some() { 1 } else { 0 };
 		let mut total_unpacked_files = 0;
 
-		if let Some(sv_packed_file) = sv_packed_file {
-			total_packed_files += 1;
+		let (out_dir_1, out_dir_2, out_dir_3) = (unpacker.out_dir.to_owned(), unpacker.out_dir.to_owned(), unpacker.out_dir.to_owned());
 
-			quietln!(quiet, "Unpacking serverside files...");
-			// Parse the serverside pack file and unpack it!
-			total_unpacked_files += unpacker.parse_sv_packed_file(sv_packed_file).await?;
-		}
+		let ((sv_n, sv_unpacked_size, sv_packed_size), (cl_n, cl_unpacked_size, cl_packed_size), (sh_n, sh_unpacked_size, sh_packed_size)) = future::try_join3(
+			async move {
+				if let Some(sv_packed_file) = sv_packed_file {
+					quietln!(quiet, "Unpacking serverside files...");
+					// Parse the serverside pack file and unpack it!
+					Unpacker::parse_sv_packed_file(out_dir_1, sv_packed_file).await
+				} else {
+					Ok((0, 0, 0))
+				}
+			},
+			async move {
+				quietln!(quiet, "Unpacking clientside files...");
+				Unpacker::parse_packed_files(out_dir_2, cl_chunk_files).await
+			},
+			async move {
+				quietln!(quiet, "Unpacking shared files...");
+				Unpacker::parse_packed_files(out_dir_3, sh_chunk_files).await
+			}
+		).await?;
 
-		quietln!(quiet, "Unpacking clientside files...");
-		total_unpacked_files += unpacker.parse_packed_files(cl_chunk_files).await?;
+		total_unpacked_files += sv_n + cl_n + sh_n;
 
-		quietln!(quiet, "Unpacking shared files...");
-		total_unpacked_files += unpacker.parse_packed_files(sh_chunk_files).await?;
-
-		Ok((total_unpacked_files, total_packed_files + 2, started.elapsed()))
+		Ok(UnpackingStatistics {
+			total_unpacked_files,
+			total_packed_files,
+			total_packed_size: sv_packed_size + sh_packed_size + cl_packed_size,
+			total_unpacked_size: sv_unpacked_size + sh_unpacked_size + cl_unpacked_size,
+			elapsed: started.elapsed()
+		})
 	}
 
 	fn copy_addon(dir: PathBuf, out_dir: PathBuf) -> Result<(Option<PathBuf>, Vec<PathBuf>, Vec<PathBuf>), std::io::Error> {
@@ -172,12 +220,16 @@ impl Unpacker {
 		Ok((sv_packed_file, cl_chunk_files, sh_chunk_files))
 	}
 
-	async fn parse_sv_packed_file(&self, sv_packed_file: PathBuf) -> Result<usize, UnpackingError> {
+	async fn parse_sv_packed_file(out_dir: PathBuf, sv_packed_file: PathBuf) -> Result<(usize, usize, usize), UnpackingError> {
 		use std::{fs::File, io::{BufReader, Read}};
 
 		let mut entries = 0;
 
-		let mut f = BufReader::new(File::open(sv_packed_file)?);
+		let f = File::open(sv_packed_file)?;
+
+		let total_size = f.metadata().map(|metadata| metadata.len() as usize).unwrap_or_default();
+
+		let mut f = BufReader::new(f);
 		fn read_entry(out_dir: &PathBuf, f: &mut BufReader<File>) -> Result<bool, std::io::Error> {
 			let mut path = Vec::with_capacity(255);
 			f.read_until(0, &mut path)?;
@@ -202,7 +254,7 @@ impl Unpacker {
 			Ok(false)
 		}
 		loop {
-			match read_entry(&self.out_dir, &mut f) {
+			match read_entry(&out_dir, &mut f) {
 				Ok(true) => break,
 				Ok(false) => entries += 1,
 				Err(error) => if let std::io::ErrorKind::UnexpectedEof = error.kind() {
@@ -213,10 +265,10 @@ impl Unpacker {
 			}
 		}
 
-		Ok(entries)
+		Ok((entries, total_size, total_size))
 	}
 
-	async fn parse_packed_files(&self, packed_files: Vec<PathBuf>) -> Result<usize, UnpackingError> {
+	async fn parse_packed_files(out_dir: PathBuf, packed_files: Vec<PathBuf>) -> Result<(usize, usize, usize), UnpackingError> {
 		use std::{fs::File, io::{SeekFrom, BufReader, Read, Cursor}};
 
 		let mut entries = 0;
@@ -240,7 +292,7 @@ impl Unpacker {
 			superchunk.extend_from_slice(&read_commented_file(packed_file)?);
 		}
 
-		fn read_entry(out_dir: &PathBuf, f: &mut std::io::Cursor<Vec<u8>>) -> Result<bool, UnpackingError> {
+		fn read_entry(out_dir: &PathBuf, f: &mut std::io::Cursor<Vec<u8>>, total_unpacked_size: &mut usize) -> Result<bool, UnpackingError> {
 			let mut path = Vec::with_capacity(255);
 			f.read_until(TERMINATOR_HACK, &mut path)?;
 
@@ -252,6 +304,8 @@ impl Unpacker {
 			f.read_until(TERMINATOR_HACK, &mut len)?;
 
 			let len = u32::from_str_radix(std::str::from_utf8(&len[0..len.len()-1])?, 16)?;
+
+			*total_unpacked_size += len as usize;
 
 			let path = out_dir.join(String::from_utf8_lossy(&path[0..path.len()-1]).as_ref());
 
@@ -265,9 +319,12 @@ impl Unpacker {
 			Ok(false)
 		}
 
+		let mut total_unpacked_size = 0;
+		let total_packed_size = superchunk.len();
+
 		let mut f = Cursor::new(superchunk);
 		loop {
-			match read_entry(&self.out_dir, &mut f) {
+			match read_entry(&out_dir, &mut f, &mut total_unpacked_size) {
 				Ok(true) => break,
 				Ok(false) => entries += 1,
 				Err(UnpackingError::IoError { error, .. }) => if let std::io::ErrorKind::UnexpectedEof = error.kind() {
@@ -279,7 +336,7 @@ impl Unpacker {
 			}
 		}
 
-		Ok(entries)
+		Ok((entries, total_unpacked_size, total_packed_size))
 	}
 }
 

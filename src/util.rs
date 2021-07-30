@@ -86,3 +86,13 @@ pub(crate) async fn prepare_output_dir(quiet: bool, out_dir: &PathBuf) {
 
 	result.expect("Failed to create output directory");
 }
+
+pub(crate) fn file_size(bytes: usize) -> String {
+	if bytes > 1000 * 1000 {
+		format!("{:.2} MB", bytes as f32 / 1000. / 1000.)
+	}else if bytes > 1000 {
+		format!("{:.2} KB", bytes as f32 / 1000.)
+	} else {
+		format!("{} bytes", bytes)
+	}
+}

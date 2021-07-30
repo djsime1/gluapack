@@ -30,6 +30,7 @@ gluapack_gmod_file_IsDir = SERVER and gluapack_gmod_file_IsDir or file.IsDir or 
 gluapack_gmod_include = gluapack_gmod_include or include
 gluapack_gmod_AddCSLuaFile = gluapack_gmod_AddCSLuaFile or AddCSLuaFile
 gluapack_gmod_CompileFile = gluapack_gmod_CompileFile or CompileFile
+gluapack_gmod_require = gluapack_gmod_require or require
 
 local file_Find = gluapack_gmod_file_Find
 local file_Exists = gluapack_gmod_file_Exists
@@ -63,11 +64,14 @@ if GLUAPACK_SUCCESS == nil then
 
 	local gluapacks = (file_Find("autorun/*_gluapack_*.lua", "LUA"))
 	table.sort(gluapacks, compareSemver)
-	local latest = "autorun/" .. gluapacks[1]
 
-	if latest ~= (debug.getinfo(1, "S").short_src:gsub("^addons/.-/", ""):gsub("^lua/", "")) then
-		include(latest)
-		return
+	if gluapacks[1] then
+		local latest = "autorun/" .. gluapacks[1]
+
+		if latest ~= (debug.getinfo(1, "S").short_src:gsub("^addons/.-/", ""):gsub("^lua/", "")) then
+			include(latest)
+			return
+		end
 	end
 end
 
@@ -217,15 +221,33 @@ for _, d in ipairs(select(2, file_Find("gluapack/*", "LUA"))) do
 	gluaunpack(("gluapack/%s/"):format(d))
 end
 
-local function getRelativeDir(path)
-	return (debug.getinfo(3, "S").short_src:gsub("/[^/]+$", ""):gsub("gamemodes/", ""))
+local function findRelativeScript(path)
+	local i = 3
+	while true do
+		local info = debug.getinfo(i, "S")
+		if not info then
+			break
+		end
+		local info = info.short_src:gsub("gamemodes/[^/]+/entities/", ""):gsub("gamemodes/([^/]+)/gamemode", "%1"):gsub("[^/]+%.lua", path)
+		if info == "[C]" then
+			return
+		end
+		local vfsPath = ("gluapack/vfs/%s.txt"):format(info)
+		print(path, info, vfsPath, i)
+		if file_Exists(info, "LUA") then
+			return info, false
+		elseif file_Exists(vfsPath, "DATA") then
+			return vfsPath, true
+		end
+		i = i + 1
+	end
 end
 
 if CLIENT then
 	-- We have to prevent any scripts from reading the VFS paths - Lua can't read clientside files with file.Read.
 
 	function file.Read(path, gamePath)
-		if gamePath:lower() == "lua" then
+		if gamePath and gamePath:lower() == "lua" then
 			local vfsPath = ("gluapack/vfs/%s.txt"):format(path)
 			if file_Exists(vfsPath, "DATA") and clientsideFiles[path] == nil then
 				return file_Read(vfsPath, "DATA")
@@ -235,7 +257,7 @@ if CLIENT then
 	end
 
 	function file.AsyncRead(path, gamePath, callback, sync)
-		if gamePath:lower() == "lua" then
+		if gamePath and gamePath:lower() == "lua" then
 			local vfsPath = ("gluapack/vfs/%s.txt"):format(path)
 			if file_Exists(vfsPath, "DATA") and clientsideFiles[path] == nil then
 				return file_AsyncRead(vfsPath, "DATA", callback, sync)
@@ -245,7 +267,7 @@ if CLIENT then
 	end
 else
 	function file.Read(path, gamePath)
-		if gamePath:lower() == "lua" then
+		if gamePath and gamePath:lower() == "lua" then
 			local vfsPath = ("gluapack/vfs/%s.txt"):format(path)
 			if file_Exists(vfsPath, "DATA") then
 				return file_Read(vfsPath, "DATA")
@@ -255,7 +277,7 @@ else
 	end
 
 	function file.AsyncRead(path, gamePath, callback, sync)
-		if gamePath:lower() == "lua" then
+		if gamePath and gamePath:lower() == "lua" then
 			local vfsPath = ("gluapack/vfs/%s.txt"):format(path)
 			if file_Exists(vfsPath, "DATA") then
 				return file_AsyncRead(vfsPath, "DATA", callback, sync)
@@ -265,7 +287,7 @@ else
 	end
 
 	function file.IsDir(path, gamePath)
-		if gamePath:lower() == "lua" then
+		if gamePath and gamePath:lower() == "lua" then
 			local vfsPath = ("gluapack/vfs/%s"):format(path)
 			if gluapack_gmod_file_IsDir(vfsPath, "DATA") then
 				return true
@@ -276,7 +298,7 @@ else
 end
 
 function file.Exists(path, gamePath)
-	if gamePath:lower() == "lua" and file_Exists(("gluapack/vfs/%s.txt"):format(path), "DATA") then
+	if gamePath and gamePath:lower() == "lua" and file_Exists(("gluapack/vfs/%s.txt"):format(path), "DATA") then
 		return true
 	end
 	return file_Exists(path, gamePath)
@@ -294,7 +316,7 @@ do
 		return a > b
 	end
 	function file.Find(path, gamePath, _sorting)
-		if gamePath:lower() == "lua" then
+		if gamePath and gamePath:lower() == "lua" then
 			-- bleh
 			local pattern = path:gsub(".lua", ".lua.txt")
 			local sorting = _sorting or "nameasc"
@@ -363,7 +385,7 @@ do
 end
 
 function file.Open(fileName, fileMode, gamePath)
-	if (fileMode == "rb" or fileMode == "r") and gamePath:lower() == "LUA" then
+	if (fileMode == "rb" or fileMode == "r") and gamePath and gamePath:lower() == "LUA" then
 		local vfsPath = ("gluapack/vfs/%s.txt"):format(fileName)
 		if file_Exists(vfsPath, "DATA") then
 			return file_Open(vfsPath, fileMode, "DATA")
@@ -372,9 +394,29 @@ function file.Open(fileName, fileMode, gamePath)
 	return file_Open(fileName, fileMode, gamePath)
 end
 
+function _G.require(path)
+	print("REQUIRE", path)
+	local vfsPath = ("gluapack/vfs/includes/modules/%s.lua.txt"):format(path)
+	print(vfsPath)
+	if file_Exists(vfsPath, "DATA") then
+		print("YES")
+		local f = CompileString(file_Read(vfsPath, "DATA"), path)
+		if f then
+			return f()
+		else
+			return
+		end
+	else
+		print("NO")
+		return gluapack_gmod_require(path)
+	end
+end
+
 function _G.include(path)
+	print("INCLUDE", path)
 	local vfsPath = ("gluapack/vfs/%s.txt"):format(path)
 	if file_Exists(vfsPath, "DATA") then
+		print(1)
 		local f = CompileString(file_Read(vfsPath, "DATA"), path)
 		if f then
 			return f()
@@ -383,19 +425,24 @@ function _G.include(path)
 		end
 	elseif file_Exists(path, "LUA") then
 		-- Saves us from resolving the relative path
+		print(2)
 		return include(path)
 	else
-		local relPath = ("%s/%s"):format(getRelativeDir(path), path)
-		vfsPath = ("gluapack/vfs/%s.txt"):format(relPath)
-		if file_Exists(vfsPath, "DATA") then
-			local f = CompileString(file_Read(vfsPath, "DATA"), relPath)()
-			if f then
-				return f()
+		print(3)
+		local absolutePath, isVfs = findRelativeScript(path)
+		if absolutePath then
+			if isVfs then
+				local f = CompileString(file_Read(absolutePath, "DATA"), absolutePath:gsub("%.txt$", ""))
+				if f then
+					return f()
+				else
+					return
+				end
 			else
-				return
+				return include(absolutePath)
 			end
 		else
-			return include(relPath)
+			return include(path)
 		end
 	end
 end
@@ -414,9 +461,13 @@ if SERVER then
 			-- Saves us from resolving the relative path
 			return AddCSLuaFile(path)
 		else
-			vfsPath = ("gluapack/vfs/%s/%s.txt"):format(getRelativeDir(path), path)
-			if file_Exists(vfsPath, "DATA") then
-				return
+			local absolutePath, isVfs = findRelativeScript(path)
+			if absolutePath then
+				if isVfs then
+					return
+				else
+					return AddCSLuaFile(absolutePath)
+				end
 			else
 				return AddCSLuaFile(path)
 			end
@@ -433,5 +484,7 @@ function _G.CompileFile(path)
 end
 
 GLUAPACK_SUCCESS = true
+
+print("gluapack loaded successfully")
 
 includeEntryFiles()
