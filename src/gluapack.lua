@@ -3,6 +3,74 @@
 -- If you want to contribute changes to this loader, please do so here:
 -- https://github.com/WilliamVenner/gluapack
 
+local function loadEntity(fullPath)
+	local dirPath, entType, className = fullPath:match("^(gamemodes/[^/]+/entities/([^/]+)/([^/]+))")
+	if not dirPath then
+		dirPath, entType, className = fullPath:match("^(([^/]+)/([^/]+))")
+		if not dirPath then
+			error(("Invalid entity passed to loadEntity! %s"):format(fullPath))
+		end
+	end
+
+	className = className:gsub("%.lua$", "")
+
+	local init
+	while true do
+		if dirPath:EndsWith(".lua") then
+			init = ("gluapack/vfs/%s.txt"):format(dirPath)
+			break
+		else
+			if SERVER then
+				init = ("gluapack/vfs/%s/init.lua.txt"):format(dirPath)
+				if file.Exists(init, "DATA") then
+					break
+				end
+			else
+				init = ("gluapack/vfs/%s/cl_init.lua.txt"):format(dirPath)
+				if file.Exists(init, "DATA") then
+					break
+				end
+			end
+			init = ("gluapack/vfs/%s/shared.lua.txt"):format(dirPath)
+			if file.Exists(init, "DATA") then
+				break
+			end
+			error(("gluapack failed to load entity %s - no init.lua cl_init.lua or shared.lua found!"):format(fullPath))
+		end
+	end
+
+	::load::
+	if entType == "entities" then
+		local f = CompileString(file.Read(init, "DATA"), fullPath)
+		if f then
+			ENT = { Type = "anim", Base = "base_gmodentity", ClassName = className }
+			f()
+			scripted_ents.Register(ENT, className)
+			ENT = nil
+		end
+	elseif entType == "weapons" then
+		local f = CompileString(file.Read(init, "DATA"), fullPath)
+		if f then
+			SWEP = { Base = "weapon_base", Primary = {}, Secondary = {}, ClassName = className }
+			f()
+			weapons.Register(SWEP, className)
+			SWEP = nil
+		end
+	elseif entType == "effects" then
+		local f = CompileString(file.Read(init, "DATA"), fullPath)
+		if f then
+			EFFECT = { ClassName = className }
+			f()
+			if CLIENT then
+				effects.Register(EFFECT, className)
+			end
+			EFFECT = nil
+		end
+	else
+		error("Unknown entity type - " .. entType)
+	end
+end
+
 local function includeEntryFiles()
 	for _, v in ipairs({ENTRY_FILES_SH}) do
 		include(v)
@@ -17,9 +85,40 @@ local function includeEntryFiles()
 			include(v)
 		end
 	end
+
+	for _, v in ipairs({ENTRY_ENTITIES}) do
+		loadEntity(v)
+	end
 end
 
-if gluapack_gmod_include and GLUAPACK_SUCCESS then return includeEntryFiles() end
+if not GLUAPACK_SENTS_LOADED then
+	hook.Add("PreRegisterSENT", "gluapack_PreRegisterSENT", function(_, class)
+		if class ~= "base_gmodentity" then return end
+		GLUAPACK_SENTS_LOADED = true
+		hook.Remove("PreRegisterSENT", "gluapack_PreRegisterSENT")
+	end)
+end
+
+if not GLUAPACK_SWEPS_LOADED then
+	hook.Add("PreRegisterSWEP", "gluapack_PreRegisterSWEP", function(_, class)
+		if class ~= "weapon_base" then return end
+		GLUAPACK_SWEPS_LOADED = true
+		hook.Remove("PreRegisterSWEP", "gluapack_PreRegisterSWEP")
+	end)
+end
+
+local gmsv_gluapack_active = file.Exists("autorun/client/gmsv_gluapack_init.lua", "LUA")
+
+if gluapack_gmod_include and GLUAPACK_SUCCESS then
+	if gmsv_gluapack_active then
+		if gmsv_gluapack_init then
+			includeEntryFiles()
+		end
+	else
+		includeEntryFiles()
+	end
+	return
+end
 
 gluapack_gmod_file_Find = gluapack_gmod_file_Find or file.Find
 gluapack_gmod_file_Exists = gluapack_gmod_file_Exists or file.Exists
@@ -221,6 +320,10 @@ for _, d in ipairs(select(2, file_Find("gluapack/*", "LUA"))) do
 	gluaunpack(("gluapack/%s/"):format(d))
 end
 
+local function normalizeMountedPath(path)
+	return path:gsub("gamemodes/[^/]+/entities/", ""):gsub("gamemodes/([^/]+)/gamemode", "%1/gamemode")
+end
+
 local function findRelativeScript(path)
 	local i = 3
 	while true do
@@ -228,12 +331,11 @@ local function findRelativeScript(path)
 		if not info then
 			break
 		end
-		local info = info.short_src:gsub("gamemodes/[^/]+/entities/", ""):gsub("gamemodes/([^/]+)/gamemode", "%1"):gsub("[^/]+%.lua", path)
+		local info = normalizeMountedPath(info.short_src):gsub("[^/]+%.lua", path)
 		if info == "[C]" then
 			return
 		end
 		local vfsPath = ("gluapack/vfs/%s.txt"):format(info)
-		print(path, info, vfsPath, i)
 		if file_Exists(info, "LUA") then
 			return info, false
 		elseif file_Exists(vfsPath, "DATA") then
@@ -293,7 +395,7 @@ else
 				return true
 			end
 		end
-		return gluapack_gmod_file_IsDir(vfsPath, gamePath)
+		return gluapack_gmod_file_IsDir(path, gamePath)
 	end
 end
 
@@ -395,11 +497,8 @@ function file.Open(fileName, fileMode, gamePath)
 end
 
 function _G.require(path)
-	print("REQUIRE", path)
 	local vfsPath = ("gluapack/vfs/includes/modules/%s.lua.txt"):format(path)
-	print(vfsPath)
 	if file_Exists(vfsPath, "DATA") then
-		print("YES")
 		local f = CompileString(file_Read(vfsPath, "DATA"), path)
 		if f then
 			return f()
@@ -407,16 +506,13 @@ function _G.require(path)
 			return
 		end
 	else
-		print("NO")
 		return gluapack_gmod_require(path)
 	end
 end
 
 function _G.include(path)
-	print("INCLUDE", path)
 	local vfsPath = ("gluapack/vfs/%s.txt"):format(path)
 	if file_Exists(vfsPath, "DATA") then
-		print(1)
 		local f = CompileString(file_Read(vfsPath, "DATA"), path)
 		if f then
 			return f()
@@ -425,14 +521,12 @@ function _G.include(path)
 		end
 	elseif file_Exists(path, "LUA") then
 		-- Saves us from resolving the relative path
-		print(2)
 		return include(path)
 	else
-		print(3)
 		local absolutePath, isVfs = findRelativeScript(path)
 		if absolutePath then
 			if isVfs then
-				local f = CompileString(file_Read(absolutePath, "DATA"), absolutePath:gsub("%.txt$", ""))
+				local f = CompileString(file_Read(absolutePath, "DATA"), absolutePath:gsub("%.txt$", ""):gsub("^gluapack/vfs/", ""))
 				if f then
 					return f()
 				else
@@ -475,16 +569,16 @@ if SERVER then
 	end
 end
 
-function _G.CompileFile(path)
+function _G.CompileFile(path, ident)
 	local vfsPath = ("gluapack/vfs/%s.txt"):format(path)
 	if file_Exists(vfsPath, "DATA") then
-		return CompileString(file.Read(vfsPath, "DATA"), path)
+		return CompileString(file.Read(vfsPath, "DATA"), ident or path)
 	end
-	return CompileFile(path)
+	return CompileFile(path, ident)
 end
 
 GLUAPACK_SUCCESS = true
 
-print("gluapack loaded successfully")
-
-includeEntryFiles()
+if not gmsv_gluapack_active then
+	includeEntryFiles()
+end

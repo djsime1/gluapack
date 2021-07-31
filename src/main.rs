@@ -11,6 +11,9 @@ pub(crate) use consts::*;
 
 mod loadorder;
 
+mod entities;
+pub use entities::extract_entity;
+
 mod config;
 mod pack;
 mod unpack;

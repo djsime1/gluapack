@@ -30,6 +30,7 @@ lazy_static = "1.4.0"
 dunce = "1.0.2"
 #gmod-lzma = "*"
 gmod-lzma = { path = "../gmod-lzma" }
+regex = "1.5.4"
 
 [features]
 nightly = []

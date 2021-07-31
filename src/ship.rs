@@ -1,6 +1,6 @@
 use std::{collections::HashSet, path::PathBuf};
 
-use crate::{MAX_LUA_SIZE, config::Config, pack::{LuaFile, Packer, PackingError, PackingStatistics}};
+use crate::{MAX_LUA_SIZE, config::Config, entities, pack::{LuaFile, Packer, PackingError, PackingStatistics}};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Realm {
@@ -47,6 +47,8 @@ pub struct ShipmentBuilder {
 
 	cl: Vec<LuaFile>,
 	cl_entry_files: HashSet<String>,
+
+	entity_entry_dirs: HashSet<String>,
 }
 impl ShipmentBuilder {
 	pub fn add(&mut self, file: ShipmentFile) -> &mut Self {
@@ -56,7 +58,9 @@ impl ShipmentBuilder {
 			Realm::Shared => (&mut self.sh, &mut self.sh_entry_files),
 		};
 
-		if file.entry {
+		if let Some(ent) = entities::extract_entity(&file.path) {
+			self.entity_entry_dirs.insert(ent);
+		} else if file.entry {
 			entry_files.insert(file.path.clone());
 		}
 
@@ -147,7 +151,9 @@ impl ShipmentBuilder {
 			self.cl_entry_files.into_iter(),
 
 			self.sh.into_iter(),
-			self.sh_entry_files.into_iter()
+			self.sh_entry_files.into_iter(),
+
+			self.entity_entry_dirs.into_iter()
 		).await?;
 
 		Ok(PackingStatistics {

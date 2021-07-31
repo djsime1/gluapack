@@ -12,6 +12,9 @@ pub use consts::MAX_LUA_SIZE;
 
 mod loadorder;
 
+mod entities;
+pub use entities::extract_entity;
+
 mod config;
 pub use config::{GlobPattern, Config};
 pub use util::glob;
