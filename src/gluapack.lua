@@ -3,6 +3,8 @@
 -- If you want to contribute changes to this loader, please do so here:
 -- https://github.com/WilliamVenner/gluapack
 
+local gmsv_gluapack_active = CLIENT and file.Exists("autorun/client/gmsv_gluapack_init.lua", "LUA")
+
 local function loadEntity(fullPath)
 	local dirPath, entType, className = fullPath:match("^([^/]+/entities/([^/]+)/([^/]+))")
 	if not dirPath then
@@ -35,7 +37,8 @@ local function loadEntity(fullPath)
 			if file.Exists(init, "DATA") then
 				break
 			end
-			error(("gluapack failed to load entity %s - no init.lua cl_init.lua or shared.lua found!"):format(fullPath))
+			ErrorNoHaltWithStack(("gluapack failed to load entity %s - no init.lua cl_init.lua or shared.lua found!"):format(fullPath))
+			return
 		end
 	end
 
@@ -113,8 +116,6 @@ local function includeEntryFiles()
 		loadEntity(v)
 	end
 end
-
-local gmsv_gluapack_active = file.Exists("autorun/client/gmsv_gluapack_init.lua", "LUA")
 
 if gluapack_gmod_include and GLUAPACK_SUCCESS then
 	if gmsv_gluapack_active then
@@ -202,11 +203,16 @@ end
 
 local TERMINATOR_HACK = string.byte("|")
 local clientsideFiles = {}
-local chunk
 local chunkNetworked = CLIENT and true or nil
-local function processChunk(path)
+local function processChunk(path, dir, decompress)
+	local chunk
 	if path then
-		chunk = file_Open(path, "rb", "DATA")
+		if decompress then
+			file.Write("gluapack-temp.dat", util.Decompress(file_Read(path, dir)))
+			chunk = file_Open("gluapack-temp.dat", "rb", "DATA")
+		else
+			chunk = file_Open(path, "rb", dir or "DATA")
+		end
 	else
 		if not file_Exists("gluapack-temp.dat", "DATA") then
 			return
@@ -282,49 +288,53 @@ local function processChunk(path)
 	end
 end
 
-local findSortedChunks do
-	local function extract(path)
-		return tonumber(path:match("gluapack%.(%d+)%..-%.lua$"))
-	end
-	local function sort(a, b)
-		return extract(a) < extract(b)
-	end
-
-	function findSortedChunks(path)
-		local f = file_Find(path, "LUA")
-		table.sort(f, sort)
-		return f
-	end
-end
-local function gluaunpack(path)
-	for _, f in ipairs(findSortedChunks(path .. "*.sh.lua")) do
-		local path = path .. f
-		if SERVER then
-			AddCSLuaFile(path)
+if gmsv_gluapack_active then
+	processChunk("materials/gluapack_{GMSV_GLUAPACK_HASH}.vmt", "GAME", true)
+else
+	local findSortedChunks do
+		local function extract(path)
+			return tonumber(path:match("gluapack%.(%d+)%..-%.lua$"))
 		end
-		file.Append("gluapack-temp.dat", include(path))
-	end
-	processChunk()
+		local function sort(a, b)
+			return extract(a) < extract(b)
+		end
 
-	for _, f in ipairs(findSortedChunks(path .. "*.cl.lua")) do
-		local path = path .. f
-		if SERVER then
-			AddCSLuaFile(path)
-		else
+		function findSortedChunks(path)
+			local f = file_Find(path, "LUA")
+			table.sort(f, sort)
+			return f
+		end
+	end
+	local function gluaunpack(path)
+		for _, f in ipairs(findSortedChunks(path .. "*.sh.lua")) do
+			local path = path .. f
+			if SERVER then
+				AddCSLuaFile(path)
+			end
 			file.Append("gluapack-temp.dat", include(path))
 		end
-	end
-	if CLIENT then
 		processChunk()
-	else
-		local svPath = path .. "gluapack.sv.lua"
-		if file_Exists(svPath, "LUA") then
-			processChunk(svPath)
+
+		for _, f in ipairs(findSortedChunks(path .. "*.cl.lua")) do
+			local path = path .. f
+			if SERVER then
+				AddCSLuaFile(path)
+			else
+				file.Append("gluapack-temp.dat", include(path))
+			end
+		end
+		if CLIENT then
+			processChunk()
+		else
+			local svPath = path .. "gluapack.sv.lua"
+			if file_Exists(svPath, "LUA") then
+				processChunk(svPath)
+			end
 		end
 	end
-end
-for _, d in ipairs(select(2, file_Find("gluapack/*", "LUA"))) do
-	gluaunpack(("gluapack/%s/"):format(d))
+	for _, d in ipairs(select(2, file_Find("gluapack/*", "LUA"))) do
+		gluaunpack(("gluapack/%s/"):format(d))
+	end
 end
 
 local function normalizeMountedPath(path)

@@ -35,6 +35,23 @@ impl ShipmentFile {
 	}
 }
 
+pub struct PackedShipment {
+	/// The clientside pack
+	pub cl: Vec<u8>,
+
+	/// The shared pack
+	pub sh: Vec<u8>,
+
+	/// The serverside pack
+	pub sv: Vec<u8>,
+
+	/// The loader file contents
+	pub loader: String,
+
+	/// Statistics about the packed shipment
+	pub stats: PackingStatistics
+}
+
 /// The shipment builder allows you to programmatically build a gluapacked addon by manually providing
 /// serverside, clientside and shared files and entry files.
 #[derive(Default, Debug, Clone)]
@@ -190,6 +207,50 @@ impl ShipmentBuilder {
 			total_packed_files: total_packed_files + 1,
 			total_packed_size,
 			elapsed: started.elapsed()
+		})
+	}
+
+	/// Consumes the builder, packs up all the files and returns the unchunked serverside, shared and clientside packed files.
+	pub async fn pack(self, unique_id: Option<String>) -> Result<PackedShipment, PackingError> {
+		let packer = Packer {
+			out_dir: PathBuf::new(),
+			config: {
+				let mut conf = Config::default();
+				conf.unique_id = unique_id;
+				conf
+			},
+			unique_id: None,
+			quiet: true,
+			in_place: false,
+			no_copy: true,
+		};
+
+		let total_unpacked_files = self.sv.len() + self.cl.len() + self.sh.len();
+
+		let started = std::time::Instant::now();
+
+		let ((sv, cl, sh), (_, _, _), total_unpacked_size) = packer.squash_packed_files(
+			self.sv.into_iter(),
+			self.cl.into_iter(),
+			self.sh.into_iter(),
+		).await?;
+
+		let loader = packer.build_loader(self.sv_entry_files.into_iter(), self.cl_entry_files.into_iter(), self.sh_entry_files.into_iter(), self.entity_dirs.into_iter(), self.weapon_dirs.into_iter(), self.effect_dirs.into_iter()).await?;
+
+		Ok(PackedShipment {
+			stats: PackingStatistics {
+				total_unpacked_files,
+				total_unpacked_size,
+				total_packed_files: 0,
+				total_packed_size: sv.len() + cl.len() + sh.len(),
+				elapsed: started.elapsed()
+			},
+
+			sv,
+			cl,
+			sh,
+
+			loader
 		})
 	}
 }

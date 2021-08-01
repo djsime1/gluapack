@@ -417,7 +417,7 @@ impl Packer {
 		Ok(())
 	}
 
-	async fn pack_lua_files<L>(lua_files: L, is_sent_to_client: bool) -> (Vec<String>, Vec<u8>, usize)
+	async fn pack_lua_files<L>(collect_paths: bool, lua_files: L, is_sent_to_client: bool) -> (Vec<String>, Vec<u8>, usize)
 	where
 		L: Iterator<Item = LuaFile> + ExactSizeIterator
 	{
@@ -451,7 +451,9 @@ impl Packer {
 
 			superchunk.write_all(&mut lua_file.contents).await.expect("Failed to write Lua file into superchunk");
 
-			file_list.push(lua_file.path);
+			if collect_paths {
+				file_list.push(lua_file.path);
+			}
 
 			total_size += lua_file.contents.len();
 		}
@@ -576,7 +578,7 @@ impl Packer {
 		Ok((chunk_n, total_written))
 	}
 
-	async fn write_loader<S, E>(&self, sv_entry_files: S, cl_entry_files: S, sh_entry_files: S, entity_dirs: E, weapon_dirs: E, effect_dirs: E) -> Result<(), PackingError>
+	pub(crate) async fn build_loader<S, E>(&self, sv_entry_files: S, cl_entry_files: S, sh_entry_files: S, entity_dirs: E, weapon_dirs: E, effect_dirs: E) -> Result<String, PackingError>
 	where
 		S: Iterator<Item = String> + ExactSizeIterator,
 		E: Iterator<Item = String> + ExactSizeIterator
@@ -640,10 +642,7 @@ impl Packer {
 			.replacen("{ENTRY_WEAPONS}", &weapon_dirs, 1)
 			.replacen("{ENTRY_EFFECTS}", &effect_dirs, 1);
 
-		tokio::fs::create_dir_all(self.out_dir.join("autorun")).await?;
-		tokio::fs::write(self.out_dir.join(format!("autorun/{}_gluapack_{}.lua", self.unique_id(), env!("CARGO_PKG_VERSION"))), loader).await?;
-
-		Ok(())
+		Ok(loader)
 	}
 
 	async fn delete_unpacked(&self, sv_paths: Vec<String>, cl_paths: Vec<String>, sh_paths: Vec<String>) -> Result<(), PackingError> {
@@ -675,18 +674,17 @@ impl Packer {
 		Ok(())
 	}
 
-	pub(crate) async fn process<L, S, E>(mut self, sv: L, sv_entry_files: S, cl: L, cl_entry_files: S, sh: L, sh_entry_files: S, entity_dirs: E, weapon_dirs: E, effect_dirs: E) -> Result<(usize, usize, usize), PackingError>
+	pub(crate) async fn squash_packed_files<L>(&self, sv: L, cl: L, sh: L) -> Result<((Vec<u8>, Vec<u8>, Vec<u8>), (Vec<String>, Vec<String>, Vec<String>), usize), PackingError>
 	where
-		L: Iterator<Item = LuaFile> + ExactSizeIterator + Send,
-		S: Iterator<Item = String> + ExactSizeIterator + Send,
-		E: Iterator<Item = String> + ExactSizeIterator + Send
+		L: Iterator<Item = LuaFile> + ExactSizeIterator + Send
 	{
 		quietln!(self.quiet, "Packing...");
 
+		let collect_paths = !self.in_place && !self.no_copy;
 		let ((sv_paths, sv, sv_len), (cl_paths, cl, cl_len), (sh_paths, sh, sh_len)) = tokio::join!(
-			Packer::pack_lua_files(sv, false),
-			Packer::pack_lua_files(cl, true),
-			Packer::pack_lua_files(sh, true)
+			Packer::pack_lua_files(collect_paths, sv, false),
+			Packer::pack_lua_files(collect_paths, cl, true),
+			Packer::pack_lua_files(collect_paths, sh, true)
 		);
 
 		let total_unpacked_size = sv_len + cl_len + sh_len;
@@ -705,17 +703,36 @@ impl Packer {
 			compress(sh)
 		).await.map_err(|_| error!(PackingError::CompressionError))?;
 
+		Ok((
+			(sv, cl, sh),
+			(sv_paths, cl_paths, sh_paths),
+			total_unpacked_size
+		))
+	}
+
+	pub(crate) fn compute_unique_id(&mut self, sv: &[u8], sh: &[u8], cl: &[u8]) {
 		self.unique_id = Some(self.config.unique_id.as_ref().map(|x| x.to_owned()).unwrap_or_else(|| {
 			const HASH_SUBHEX_LENGTH: usize = 16;
 
 			quietln!(self.quiet, "Calculating hash...");
 
 			let mut sha256 = sha2::Sha256::new();
-			sha256.update(&sv);
-			sha256.update(&sh);
-			sha256.update(&cl);
+			sha256.update(sv);
+			sha256.update(sh);
+			sha256.update(cl);
 			format!("{:x}", sha256.finalize())[0..HASH_SUBHEX_LENGTH].to_string()
 		}));
+	}
+
+	pub(crate) async fn process<L, S, E>(mut self, sv: L, sv_entry_files: S, cl: L, cl_entry_files: S, sh: L, sh_entry_files: S, entity_dirs: E, weapon_dirs: E, effect_dirs: E) -> Result<(usize, usize, usize), PackingError>
+	where
+		L: Iterator<Item = LuaFile> + ExactSizeIterator + Send,
+		S: Iterator<Item = String> + ExactSizeIterator + Send,
+		E: Iterator<Item = String> + ExactSizeIterator + Send
+	{
+		let ((sv, cl, sh), (sv_paths, cl_paths, sh_paths), total_unpacked_size) = self.squash_packed_files(sv, cl, sh).await?;
+
+		self.compute_unique_id(&sv, &cl, &sh);
 
 		tokio::fs::create_dir_all(self.out_dir.join(&format!("gluapack/{}", self.unique_id()))).await.expect("Failed to create gluapack directory");
 
@@ -738,7 +755,10 @@ impl Packer {
 		};
 
 		quietln!(self.quiet, "Injecting loader...");
-		self.write_loader(sv_entry_files, cl_entry_files, sh_entry_files, entity_dirs, weapon_dirs, effect_dirs).await?;
+
+		let loader = self.build_loader(sv_entry_files, cl_entry_files, sh_entry_files, entity_dirs, weapon_dirs, effect_dirs).await?;
+		tokio::fs::create_dir_all(self.out_dir.join("autorun")).await?;
+		tokio::fs::write(self.out_dir.join(format!("autorun/{}_gluapack_{}.lua", self.unique_id(), env!("CARGO_PKG_VERSION"))), loader).await?;
 
 		if !self.in_place && !self.no_copy {
 			quietln!(self.quiet, "Deleting unpacked files...");
