@@ -4,7 +4,7 @@
 -- https://github.com/WilliamVenner/gluapack
 
 local function loadEntity(fullPath)
-	local dirPath, entType, className = fullPath:match("^(gamemodes/[^/]+/entities/([^/]+)/([^/]+))")
+	local dirPath, entType, className = fullPath:match("^([^/]+/entities/([^/]+)/([^/]+))")
 	if not dirPath then
 		dirPath, entType, className = fullPath:match("^(([^/]+)/([^/]+))")
 		if not dirPath then
@@ -40,34 +40,35 @@ local function loadEntity(fullPath)
 	end
 
 	::load::
-	if entType == "entities" then
-		local f = CompileString(file.Read(init, "DATA"), fullPath)
-		if f then
-			ENT = { Type = "anim", Base = "base_gmodentity", ClassName = className }
+	local f = CompileString(file.Read(init, "DATA"), fullPath)
+	if f then
+		if entType == "entities" then
+			ENT = { Type = "anim", Base = "base_entity", ClassName = className, Folder = "entities/" .. className }
 			f()
 			scripted_ents.Register(ENT, className)
-			ENT = nil
-		end
-	elseif entType == "weapons" then
-		local f = CompileString(file.Read(init, "DATA"), fullPath)
-		if f then
-			SWEP = { Base = "weapon_base", Primary = {}, Secondary = {}, ClassName = className }
+			_G.ENT = nil
+		elseif entType == "weapons" then
+			SWEP = { Base = "weapon_base", Primary = {}, Secondary = {}, ClassName = className, Folder = "weapons/" .. className }
 			f()
 			weapons.Register(SWEP, className)
-			SWEP = nil
-		end
-	elseif entType == "effects" then
-		local f = CompileString(file.Read(init, "DATA"), fullPath)
-		if f then
-			EFFECT = { ClassName = className }
+			_G.SWEP = nil
+		elseif entType == "effects" then
+			if not EFFECT_BASE then
+				EFFECT = { ClassName = "base", Folder = "effects/base.lua" }
+				include("base/entities/effects/base.lua")
+				EFFECT_BASE, EFFECT = EFFECT, nil
+			end
+			EFFECT = table.Copy(EFFECT_BASE)
+			EFFECT.ClassName = className
+			EFFECT.Folder = "effects/" .. className
 			f()
 			if CLIENT then
 				effects.Register(EFFECT, className)
 			end
-			EFFECT = nil
+			_G.EFFECT = nil
+		else
+			error("Unknown entity type - " .. entType)
 		end
-	else
-		error("Unknown entity type - " .. entType)
 	end
 end
 
@@ -86,25 +87,31 @@ local function includeEntryFiles()
 		end
 	end
 
-	for _, v in ipairs({ENTRY_ENTITIES}) do
+	local entryWeps = {ENTRY_WEAPONS}
+	if #entryWeps > 0 then
+		gluapack_gmod_weapons_OnLoaded = weapons.OnLoaded
+		weapons.OnLoaded = function()
+			for _, wep in ipairs(entryWeps) do
+				loadEntity(wep)
+			end
+			gluapack_gmod_weapons_OnLoaded()
+		end
+	end
+
+	local entryEnts = {ENTRY_ENTITIES}
+	if #entryEnts > 0 then
+		gluapack_gmod_scripted_ents_OnLoaded = scripted_ents.OnLoaded
+		scripted_ents.OnLoaded = function()
+			for _, ent in ipairs(entryEnts) do
+				loadEntity(ent)
+			end
+			gluapack_gmod_scripted_ents_OnLoaded()
+		end
+	end
+
+	for _, v in ipairs({ENTRY_EFFECTS}) do
 		loadEntity(v)
 	end
-end
-
-if not GLUAPACK_SENTS_LOADED then
-	hook.Add("PreRegisterSENT", "gluapack_PreRegisterSENT", function(_, class)
-		if class ~= "base_gmodentity" then return end
-		GLUAPACK_SENTS_LOADED = true
-		hook.Remove("PreRegisterSENT", "gluapack_PreRegisterSENT")
-	end)
-end
-
-if not GLUAPACK_SWEPS_LOADED then
-	hook.Add("PreRegisterSWEP", "gluapack_PreRegisterSWEP", function(_, class)
-		if class ~= "weapon_base" then return end
-		GLUAPACK_SWEPS_LOADED = true
-		hook.Remove("PreRegisterSWEP", "gluapack_PreRegisterSWEP")
-	end)
 end
 
 local gmsv_gluapack_active = file.Exists("autorun/client/gmsv_gluapack_init.lua", "LUA")

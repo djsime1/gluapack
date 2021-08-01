@@ -33,11 +33,11 @@ impl Ord for LuaFile {
 }
 
 pub struct PackingStatistics {
-	pub(crate) total_unpacked_files: usize,
-	pub(crate) total_unpacked_size: usize,
-	pub(crate) total_packed_files: usize,
-	pub(crate) total_packed_size: usize,
-	pub(crate) elapsed: Duration,
+	pub total_unpacked_files: usize,
+	pub total_unpacked_size: usize,
+	pub total_packed_files: usize,
+	pub total_packed_size: usize,
+	pub elapsed: Duration,
 }
 impl PackingStatistics {
 	pub fn files(&self) -> String {
@@ -130,7 +130,7 @@ impl Packer {
 
 		quietln!(quiet, "Collecting entity files...");
 
-		let entity_entry_dirs = {
+		let entity_dirs = {
 			// TODO
 			//lazy_static! {
 			//	static ref ENTITY_FILE_GLOBS: [GlobPattern; 3] = [
@@ -138,11 +138,45 @@ impl Packer {
 			//		GlobPattern::new("[entities|weapons|effects]/*"),
 			//	];
 			//}
-			let mut entity_entry_dirs = HashSet::new();
+			let mut entity_dirs = HashSet::new();
 			/*for file in sv.iter().chain(sh.iter()).chain(cl.iter()) {
-				entity_entry_dirs.insert(file.path.to_owned());
+				entity_dirs.insert(file.path.to_owned());
 			}*/
-			entity_entry_dirs
+			entity_dirs
+		};
+
+		quietln!(quiet, "Collecting weapon files...");
+
+		let weapon_dirs = {
+			// TODO
+			//lazy_static! {
+			//	static ref ENTITY_FILE_GLOBS: [GlobPattern; 3] = [
+			//		GlobPattern::new("gamemodes/*/entities/[entities|weapons|effects]/*"),
+			//		GlobPattern::new("[entities|weapons|effects]/*"),
+			//	];
+			//}
+			let mut weapon_dirs = HashSet::new();
+			/*for file in sv.iter().chain(sh.iter()).chain(cl.iter()) {
+				entity_dirs.insert(file.path.to_owned());
+			}*/
+			weapon_dirs
+		};
+
+		quietln!(quiet, "Collecting effect files...");
+
+		let effect_dirs = {
+			// TODO
+			//lazy_static! {
+			//	static ref ENTITY_FILE_GLOBS: [GlobPattern; 3] = [
+			//		GlobPattern::new("gamemodes/*/entities/[entities|weapons|effects]/*"),
+			//		GlobPattern::new("[entities|weapons|effects]/*"),
+			//	];
+			//}
+			let mut effect_dirs = HashSet::new();
+			/*for file in sv.iter().chain(sh.iter()).chain(cl.iter()) {
+				entity_dirs.insert(file.path.to_owned());
+			}*/
+			effect_dirs
 		};
 
 		{
@@ -180,7 +214,9 @@ impl Packer {
 			sh.into_iter(),
 			sh_entry_files.into_iter(),
 
-			entity_entry_dirs.into_iter()
+			entity_dirs.into_iter(),
+			weapon_dirs.into_iter(),
+			effect_dirs.into_iter()
 		).await?;
 
 		Ok(PackingStatistics {
@@ -540,7 +576,7 @@ impl Packer {
 		Ok((chunk_n, total_written))
 	}
 
-	async fn write_loader<S, E>(&self, sv_entry_files: S, cl_entry_files: S, sh_entry_files: S, entity_entry_dirs: E) -> Result<(), PackingError>
+	async fn write_loader<S, E>(&self, sv_entry_files: S, cl_entry_files: S, sh_entry_files: S, entity_dirs: E, weapon_dirs: E, effect_dirs: E) -> Result<(), PackingError>
 	where
 		S: Iterator<Item = String> + ExactSizeIterator,
 		E: Iterator<Item = String> + ExactSizeIterator
@@ -587,18 +623,22 @@ impl Packer {
 			}
 		}
 
-		let (sv_entry_files, cl_entry_files, sh_entry_files, entity_entry_dirs) = tokio::join!(
+		let (sv_entry_files, cl_entry_files, sh_entry_files, entity_dirs, weapon_dirs, effect_dirs) = tokio::join!(
 			join_entry_files(sv_entry_files),
 			join_entry_files(cl_entry_files),
 			join_entry_files(sh_entry_files),
-			join_entity_dirs(entity_entry_dirs),
+			join_entity_dirs(entity_dirs),
+			join_entity_dirs(weapon_dirs),
+			join_entity_dirs(effect_dirs),
 		);
 
 		let loader = GLUAPACK_LOADER
 			.replacen("{ENTRY_FILES_SV}", &sv_entry_files, 1)
 			.replacen("{ENTRY_FILES_CL}", &cl_entry_files, 1)
 			.replacen("{ENTRY_FILES_SH}", &sh_entry_files, 1)
-			.replacen("{ENTRY_ENTITIES}", &entity_entry_dirs, 1);
+			.replacen("{ENTRY_ENTITIES}", &entity_dirs, 1)
+			.replacen("{ENTRY_WEAPONS}", &weapon_dirs, 1)
+			.replacen("{ENTRY_EFFECTS}", &effect_dirs, 1);
 
 		tokio::fs::create_dir_all(self.out_dir.join("autorun")).await?;
 		tokio::fs::write(self.out_dir.join(format!("autorun/{}_gluapack_{}.lua", self.unique_id(), env!("CARGO_PKG_VERSION"))), loader).await?;
@@ -635,7 +675,7 @@ impl Packer {
 		Ok(())
 	}
 
-	pub(crate) async fn process<L, S, E>(mut self, sv: L, sv_entry_files: S, cl: L, cl_entry_files: S, sh: L, sh_entry_files: S, entity_entry_dirs: E) -> Result<(usize, usize, usize), PackingError>
+	pub(crate) async fn process<L, S, E>(mut self, sv: L, sv_entry_files: S, cl: L, cl_entry_files: S, sh: L, sh_entry_files: S, entity_dirs: E, weapon_dirs: E, effect_dirs: E) -> Result<(usize, usize, usize), PackingError>
 	where
 		L: Iterator<Item = LuaFile> + ExactSizeIterator + Send,
 		S: Iterator<Item = String> + ExactSizeIterator + Send,
@@ -698,7 +738,7 @@ impl Packer {
 		};
 
 		quietln!(self.quiet, "Injecting loader...");
-		self.write_loader(sv_entry_files, cl_entry_files, sh_entry_files, entity_entry_dirs).await?;
+		self.write_loader(sv_entry_files, cl_entry_files, sh_entry_files, entity_dirs, weapon_dirs, effect_dirs).await?;
 
 		if !self.in_place && !self.no_copy {
 			quietln!(self.quiet, "Deleting unpacked files...");

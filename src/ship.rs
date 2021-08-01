@@ -48,7 +48,9 @@ pub struct ShipmentBuilder {
 	cl: Vec<LuaFile>,
 	cl_entry_files: HashSet<String>,
 
-	entity_entry_dirs: HashSet<String>,
+	entity_dirs: HashSet<String>,
+	weapon_dirs: HashSet<String>,
+	effect_dirs: HashSet<String>,
 }
 impl ShipmentBuilder {
 	pub fn add(&mut self, file: ShipmentFile) -> &mut Self {
@@ -58,8 +60,12 @@ impl ShipmentBuilder {
 			Realm::Shared => (&mut self.sh, &mut self.sh_entry_files),
 		};
 
-		if let Some(ent) = entities::extract_entity(&file.path) {
-			self.entity_entry_dirs.insert(ent);
+		if let Some((ent, ent_type)) = entities::extract_entity(&file.path) {
+			match ent_type {
+				entities::EntityType::Weapon => &mut self.weapon_dirs,
+				entities::EntityType::Entity => &mut self.entity_dirs,
+				entities::EntityType::Effect => &mut self.effect_dirs,
+			}.insert(ent);
 		} else if file.entry {
 			entry_files.insert(file.path.clone());
 		}
@@ -124,6 +130,26 @@ impl ShipmentBuilder {
 		self
 	}
 
+	pub fn has_cl(&self) -> bool {
+		!self.cl.is_empty()
+	}
+
+	pub fn has_sh(&self) -> bool {
+		!self.sh.is_empty()
+	}
+
+	pub fn has_sv(&self) -> bool {
+		!self.sv.is_empty()
+	}
+
+	pub fn has_entities(&self) -> bool {
+		!self.entity_dirs.is_empty()
+	}
+
+	pub fn has_weapons(&self) -> bool {
+		!self.weapon_dirs.is_empty()
+	}
+
 	/// Consumes the builder and packs the shipment.
 	pub async fn ship(self, out_dir: PathBuf, unique_id: Option<String>) -> Result<PackingStatistics, PackingError> {
 		let packer = Packer {
@@ -153,7 +179,9 @@ impl ShipmentBuilder {
 			self.sh.into_iter(),
 			self.sh_entry_files.into_iter(),
 
-			self.entity_entry_dirs.into_iter()
+			self.entity_dirs.into_iter(),
+			self.weapon_dirs.into_iter(),
+			self.effect_dirs.into_iter()
 		).await?;
 
 		Ok(PackingStatistics {

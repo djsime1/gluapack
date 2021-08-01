@@ -16,11 +16,11 @@ lazy_static! {
 }
 
 pub struct UnpackingStatistics {
-	total_unpacked_files: usize,
-	total_unpacked_size: usize,
-	total_packed_files: usize,
-	total_packed_size: usize,
-	elapsed: Duration,
+	pub total_unpacked_files: usize,
+	pub total_unpacked_size: usize,
+	pub total_packed_files: usize,
+	pub total_packed_size: usize,
+	pub elapsed: Duration,
 }
 impl UnpackingStatistics {
 	pub fn files(&self) -> String {
