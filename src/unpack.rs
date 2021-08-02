@@ -42,12 +42,12 @@ impl UnpackingStatistics {
 	}
 }
 
-pub(crate) struct Unpacker {
-	pub(crate) dir: PathBuf,
-	pub(crate) out_dir: PathBuf
+pub struct Unpacker {
+	pub dir: PathBuf,
+	pub out_dir: PathBuf
 }
 impl Unpacker {
-	pub(crate) async fn unpack(dir: PathBuf, out_dir: Option<PathBuf>, no_copy: bool, quiet: bool) -> Result<UnpackingStatistics, UnpackingError> {
+	pub async fn unpack(dir: PathBuf, out_dir: Option<PathBuf>, no_copy: bool, quiet: bool) -> Result<UnpackingStatistics, UnpackingError> {
 		quietln!(quiet, "Addon Path: {}", util::canonicalize(&dir).display());
 
 		let out_dir = if let Some(out_dir) = out_dir {

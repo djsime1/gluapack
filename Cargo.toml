@@ -11,26 +11,28 @@ path = "src/main.rs"
 [lib]
 name = "gluapack"
 path = "src/lib.rs"
+required-features = ["lib"]
 
 [profile.release]
 lto = 'thin'
 codegen-units = 1
 
 [dependencies]
-glob = "0.3.0"
+clap = { optional = true, version = "2.33.3" }
 tokio = { version = "1.8.1", features = ["fs", "process", "rt", "rt-multi-thread", "macros", "sync", "io-util"] }
+glob = "0.3.0"
 futures-util = "0.3.15"
 serde = { version = "1.0.126", features = ["derive"] }
 serde_json = "1.0.64"
 derive_more = "0.99.16"
 thiserror = "1.0.26"
 sha2 = "0.9.5"
-clap = "2.33.3"
 lazy_static = "1.4.0"
 dunce = "1.0.2"
-#gmod-lzma = "*"
-gmod-lzma = { path = "../gmod-lzma" }
+gmod-lzma = "*"
 regex = "1.5.4"
 
 [features]
+default = ["clap"]
 nightly = []
+lib = []

@@ -280,6 +280,8 @@ dependencies = [
 [[package]]
 name = "gmod-lzma"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14b4fd5aa2b189ffb6b3af7b02153561ffe522c82292e6b90bfc3d6bc90fc0df"
 dependencies = [
  "bindgen",
  "cc",

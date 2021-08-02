@@ -1,13 +1,11 @@
 use std::path::PathBuf;
 
-#[macro_export]
 macro_rules! abort {
 	() => {
 		std::process::exit(2);
 	};
 }
 
-#[macro_export]
 macro_rules! quietln {
 	($quiet:expr, $($arg:tt)*) => {
 		if !$quiet {
@@ -22,7 +20,6 @@ macro_rules! quietln {
 	};
 }
 
-#[macro_export]
 macro_rules! impl_error {
 	($from:ty, $to:ident::$err:ident) => {
 		impl From<$from> for $to {
@@ -37,7 +34,6 @@ macro_rules! impl_error {
 	}
 }
 
-#[macro_export]
 macro_rules! error {
 	($enum:ident::$variant:ident($error:expr)) => {
 		$enum::$variant {
@@ -66,7 +62,7 @@ pub fn glob<S: AsRef<str>>(pattern: S) -> Result<glob::Paths, glob::PatternError
 }
 
 #[inline(always)]
-pub(crate) fn canonicalize(path: &PathBuf) -> PathBuf {
+pub fn canonicalize(path: &PathBuf) -> PathBuf {
 	dunce::canonicalize(path).as_ref().unwrap_or(path).to_owned()
 }
 
@@ -87,7 +83,7 @@ pub(crate) async fn prepare_output_dir(quiet: bool, out_dir: &PathBuf) {
 	result.expect("Failed to create output directory");
 }
 
-pub(crate) fn file_size(bytes: usize) -> String {
+pub fn file_size(bytes: usize) -> String {
 	if bytes > 1000 * 1000 {
 		format!("{:.2} MB", bytes as f32 / 1000. / 1000.)
 	}else if bytes > 1000 {

@@ -6,9 +6,9 @@ use futures_util::{FutureExt, future};
 use sha2::Digest;
 
 #[derive(Debug, Clone)]
-pub(crate) struct LuaFile {
-	pub(crate) path: String,
-	pub(crate) contents: Vec<u8>
+pub struct LuaFile {
+	pub path: String,
+	pub contents: Vec<u8>
 }
 impl std::hash::Hash for LuaFile {
 	fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -59,16 +59,16 @@ impl PackingStatistics {
 	}
 }
 
-pub(crate) struct Packer {
-	pub(crate) out_dir: PathBuf,
-	pub(crate) config: Config,
-	pub(crate) unique_id: Option<String>,
-	pub(crate) quiet: bool,
-	pub(crate) in_place: bool,
-	pub(crate) no_copy: bool
+pub struct Packer {
+	pub out_dir: PathBuf,
+	pub config: Config,
+	pub unique_id: Option<String>,
+	pub quiet: bool,
+	pub in_place: bool,
+	pub no_copy: bool
 }
 impl Packer {
-	pub(crate) async fn pack(mut dir: PathBuf, out_dir: Option<PathBuf>, no_copy: bool, quiet: bool, config: Option<Config>) -> Result<PackingStatistics, PackingError> {
+	pub async fn pack(mut dir: PathBuf, out_dir: Option<PathBuf>, no_copy: bool, quiet: bool, config: Option<Config>) -> Result<PackingStatistics, PackingError> {
 		let mut config = match config {
 			Some(config) => config,
 			None => {
@@ -578,7 +578,7 @@ impl Packer {
 		Ok((chunk_n, total_written))
 	}
 
-	pub(crate) async fn build_loader<S, E>(&self, sv_entry_files: S, cl_entry_files: S, sh_entry_files: S, entity_dirs: E, weapon_dirs: E, effect_dirs: E) -> Result<String, PackingError>
+	pub async fn build_loader<S, E>(&self, sv_entry_files: S, cl_entry_files: S, sh_entry_files: S, entity_dirs: E, weapon_dirs: E, effect_dirs: E) -> Result<String, PackingError>
 	where
 		S: Iterator<Item = String> + ExactSizeIterator,
 		E: Iterator<Item = String> + ExactSizeIterator
@@ -674,7 +674,7 @@ impl Packer {
 		Ok(())
 	}
 
-	pub(crate) async fn squash_packed_files<L>(&self, sv: L, cl: L, sh: L) -> Result<((Vec<u8>, Vec<u8>, Vec<u8>), (Vec<String>, Vec<String>, Vec<String>), usize), PackingError>
+	pub async fn squash_packed_files<L>(&self, sv: L, cl: L, sh: L) -> Result<((Vec<u8>, Vec<u8>, Vec<u8>), (Vec<String>, Vec<String>, Vec<String>), usize), PackingError>
 	where
 		L: Iterator<Item = LuaFile> + ExactSizeIterator + Send
 	{
@@ -710,7 +710,7 @@ impl Packer {
 		))
 	}
 
-	pub(crate) fn compute_unique_id(&mut self, sv: &[u8], sh: &[u8], cl: &[u8]) {
+	pub fn compute_unique_id(&mut self, sv: &[u8], sh: &[u8], cl: &[u8]) {
 		self.unique_id = Some(self.config.unique_id.as_ref().map(|x| x.to_owned()).unwrap_or_else(|| {
 			const HASH_SUBHEX_LENGTH: usize = 16;
 
@@ -724,7 +724,7 @@ impl Packer {
 		}));
 	}
 
-	pub(crate) async fn process<L, S, E>(mut self, sv: L, sv_entry_files: S, cl: L, cl_entry_files: S, sh: L, sh_entry_files: S, entity_dirs: E, weapon_dirs: E, effect_dirs: E) -> Result<(usize, usize, usize), PackingError>
+	pub async fn process<L, S, E>(mut self, sv: L, sv_entry_files: S, cl: L, cl_entry_files: S, sh: L, sh_entry_files: S, entity_dirs: E, weapon_dirs: E, effect_dirs: E) -> Result<(usize, usize, usize), PackingError>
 	where
 		L: Iterator<Item = LuaFile> + ExactSizeIterator + Send,
 		S: Iterator<Item = String> + ExactSizeIterator + Send,
