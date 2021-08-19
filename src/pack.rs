@@ -216,7 +216,9 @@ impl Packer {
 
 			entity_dirs.into_iter(),
 			weapon_dirs.into_iter(),
-			effect_dirs.into_iter()
+			effect_dirs.into_iter(),
+
+			true
 		).await?;
 
 		Ok(PackingStatistics {
@@ -674,7 +676,7 @@ impl Packer {
 		Ok(())
 	}
 
-	pub async fn squash_packed_files<L>(&self, sv: L, cl: L, sh: L) -> Result<((Vec<u8>, Vec<u8>, Vec<u8>), (Vec<String>, Vec<String>, Vec<String>), usize), PackingError>
+	pub async fn squash_packed_files<L>(&self, sv: L, cl: L, sh: L, compress: bool) -> Result<((Vec<u8>, Vec<u8>, Vec<u8>), (Vec<String>, Vec<String>, Vec<String>), usize), PackingError>
 	where
 		L: Iterator<Item = LuaFile> + ExactSizeIterator + Send
 	{
@@ -689,19 +691,23 @@ impl Packer {
 
 		let total_unpacked_size = sv_len + cl_len + sh_len;
 
-		quietln!(self.quiet, "Compressing...");
+		let (cl, sh) = if compress {
+			quietln!(self.quiet, "Compressing...");
 
-		async fn compress(data: Vec<u8>) -> Result<Vec<u8>, gmod_lzma::SZ> {
-			if data.is_empty() {
-				Ok(data)
-			} else {
-				tokio::task::spawn_blocking(move || gmod_lzma::compress(&data, 9)).await.expect("Failed to join thread")
+			async fn compress(data: Vec<u8>) -> Result<Vec<u8>, gmod_lzma::SZ> {
+				if data.is_empty() {
+					Ok(data)
+				} else {
+					tokio::task::spawn_blocking(move || gmod_lzma::compress(&data, 9)).await.expect("Failed to join thread")
+				}
 			}
-		}
-		let (cl, sh) = future::try_join(
-			compress(cl),
-			compress(sh)
-		).await.map_err(|_| error!(PackingError::CompressionError))?;
+			future::try_join(
+				compress(cl),
+				compress(sh)
+			).await.map_err(|_| error!(PackingError::CompressionError))?
+		} else {
+			(cl, sh)
+		};
 
 		Ok((
 			(sv, cl, sh),
@@ -724,13 +730,13 @@ impl Packer {
 		}));
 	}
 
-	pub async fn process<L, S, E>(mut self, sv: L, sv_entry_files: S, cl: L, cl_entry_files: S, sh: L, sh_entry_files: S, entity_dirs: E, weapon_dirs: E, effect_dirs: E) -> Result<(usize, usize, usize), PackingError>
+	pub async fn process<L, S, E>(mut self, sv: L, sv_entry_files: S, cl: L, cl_entry_files: S, sh: L, sh_entry_files: S, entity_dirs: E, weapon_dirs: E, effect_dirs: E, compress: bool) -> Result<(usize, usize, usize), PackingError>
 	where
 		L: Iterator<Item = LuaFile> + ExactSizeIterator + Send,
 		S: Iterator<Item = String> + ExactSizeIterator + Send,
 		E: Iterator<Item = String> + ExactSizeIterator + Send
 	{
-		let ((sv, cl, sh), (sv_paths, cl_paths, sh_paths), total_unpacked_size) = self.squash_packed_files(sv, cl, sh).await?;
+		let ((sv, cl, sh), (sv_paths, cl_paths, sh_paths), total_unpacked_size) = self.squash_packed_files(sv, cl, sh, compress).await?;
 
 		self.compute_unique_id(&sv, &cl, &sh);
 
