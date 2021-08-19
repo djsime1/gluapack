@@ -17,28 +17,55 @@ local function loadEntity(fullPath)
 	className = className:gsub("%.lua$", "")
 
 	local init
-	while true do
-		if dirPath:EndsWith(".lua") then
-			init = ("gluapack/vfs/%s.txt"):format(dirPath)
-			break
-		else
-			if SERVER then
+	if entType == "effects" then
+		while true do
+			if dirPath:EndsWith(".lua") then
+				init = ("gluapack/vfs/%s.txt"):format(dirPath)
+				break
+			else
+				init = ("gluapack/vfs/%s/shared.lua.txt"):format(dirPath)
+				if file.Exists(init, "DATA") then
+					break
+				end
 				init = ("gluapack/vfs/%s/init.lua.txt"):format(dirPath)
 				if file.Exists(init, "DATA") then
 					break
 				end
+				-- TODO: is this correct?
+				if CLIENT then
+					init = ("gluapack/vfs/%s/cl_init.lua.txt"):format(dirPath)
+					if file.Exists(init, "DATA") then
+						break
+					end
+				end
+				ErrorNoHaltWithStack(("gluapack failed to load effect %s - no init.lua cl_init.lua or shared.lua found!"):format(fullPath))
+				return
+			end
+		end
+	else
+		while true do
+			if dirPath:EndsWith(".lua") then
+				init = ("gluapack/vfs/%s.txt"):format(dirPath)
+				break
 			else
-				init = ("gluapack/vfs/%s/cl_init.lua.txt"):format(dirPath)
+				if SERVER then
+					init = ("gluapack/vfs/%s/init.lua.txt"):format(dirPath)
+					if file.Exists(init, "DATA") then
+						break
+					end
+				else
+					init = ("gluapack/vfs/%s/cl_init.lua.txt"):format(dirPath)
+					if file.Exists(init, "DATA") then
+						break
+					end
+				end
+				init = ("gluapack/vfs/%s/shared.lua.txt"):format(dirPath)
 				if file.Exists(init, "DATA") then
 					break
 				end
+				ErrorNoHaltWithStack(("gluapack failed to load entity %s - no init.lua cl_init.lua or shared.lua found!"):format(fullPath))
+				return
 			end
-			init = ("gluapack/vfs/%s/shared.lua.txt"):format(dirPath)
-			if file.Exists(init, "DATA") then
-				break
-			end
-			ErrorNoHaltWithStack(("gluapack failed to load entity %s - no init.lua cl_init.lua or shared.lua found!"):format(fullPath))
-			return
 		end
 	end
 
@@ -348,16 +375,18 @@ local function findRelativeScript(path)
 		if not info then
 			break
 		end
-		local info = normalizeMountedPath(info.short_src):gsub("[^/]+%.lua", path)
-		if info == "[C]" then
+		if info.short_src == "[C]" then
 			return
 		end
+
+		local info = normalizeMountedPath(info.short_src):gsub("[^/]+%.lua", path)
 		local vfsPath = ("gluapack/vfs/%s.txt"):format(info)
 		if file_Exists(info, "LUA") then
 			return info, false
 		elseif file_Exists(vfsPath, "DATA") then
 			return vfsPath, true
 		end
+
 		i = i + 1
 	end
 end
@@ -543,7 +572,14 @@ function _G.include(path)
 		local absolutePath, isVfs = findRelativeScript(path)
 		if absolutePath then
 			if isVfs then
-				local f = CompileString(file_Read(absolutePath, "DATA"), absolutePath:gsub("%.txt$", ""):gsub("^gluapack/vfs/", ""))
+				local src = absolutePath:gsub("%.txt$", ""):gsub("^gluapack/vfs/", "")
+
+				-- HACK! This is probably a bigger bug, and needs proper investigating
+				if src:match("^([^/]+)/gamemode/") or src:match("^([^/]+)/entities/") then
+					src = "gamemodes/" .. src
+				end
+
+				local f = CompileString(file_Read(absolutePath, "DATA"), src)
 				if f then
 					return f()
 				else
