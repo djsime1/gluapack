@@ -120,7 +120,7 @@ local function processChunk()
 			path = ("gluapack/vfs/%s.txt"):format(table.concat(path))
 		end
 
-		file.CreateDir((path:gsub("/[^/]-$", "")))
+		file.CreateDir(path:gsub("/[^/]-$", ""))
 
 		local remaining
 		if GLUAPACK_IS_CHUNK_NETWORKED then
@@ -480,7 +480,7 @@ end
 if SERVER then
 	function _G.AddCSLuaFile(path)
 		if path == nil then
-			return AddCSLuaFile((debug.getinfo(2, "S").short_src:gsub("^lua/", "")))
+			return AddCSLuaFile(debug.getinfo(2, "S").short_src:gsub("^lua/", ""))
 		end
 
 		-- This function intentionally does nothing for VFS files, since we've already AddCSLuaFile'd them.
