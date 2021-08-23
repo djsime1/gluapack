@@ -347,7 +347,7 @@ else
 				return true
 			end
 		end
-		return gluapack_gmod_file_IsDir(vfsPath, gamePath)
+		return gluapack_gmod_file_IsDir(path, gamePath)
 	end
 end
 
