@@ -311,6 +311,7 @@ if CLIENT then
 	end
 
 	function file.AsyncRead(path, gamePath, callback, sync)
+		sync = sync or false
 		if gamePath:lower() == "lua" then
 			local vfsPath = ("gluapack/vfs/%s.txt"):format(path)
 			if file_Exists(vfsPath, "DATA") and clientsideFiles[path] == nil then
@@ -331,6 +332,7 @@ else
 	end
 
 	function file.AsyncRead(path, gamePath, callback, sync)
+		sync = sync or false
 		if gamePath:lower() == "lua" then
 			local vfsPath = ("gluapack/vfs/%s.txt"):format(path)
 			if file_Exists(vfsPath, "DATA") then
