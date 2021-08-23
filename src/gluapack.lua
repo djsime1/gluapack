@@ -301,7 +301,7 @@ if CLIENT then
 	-- We have to prevent any scripts from reading the VFS paths - Lua can't read clientside files with file.Read.
 
 	function file.Read(path, gamePath)
-		if gamePath:lower() == "lua" then
+		if isstring(gamePath) and gamePath:lower() == "lua" then
 			local vfsPath = ("gluapack/vfs/%s.txt"):format(path)
 			if file_Exists(vfsPath, "DATA") and clientsideFiles[path] == nil then
 				return file_Read(vfsPath, "DATA")
@@ -321,7 +321,7 @@ if CLIENT then
 	end
 else
 	function file.Read(path, gamePath)
-		if gamePath:lower() == "lua" then
+		if isstring(gamePath) and gamePath:lower() == "lua" then
 			local vfsPath = ("gluapack/vfs/%s.txt"):format(path)
 			if file_Exists(vfsPath, "DATA") then
 				return file_Read(vfsPath, "DATA")
